@@ -13,8 +13,8 @@ CLIP4CAD-H is designed to learn representations that:
 ### Key Components
 
 1. **B-Rep Encoder**: AutoBrep-style FSQ VAE encoder for face grids and edge curves
-2. **Point Cloud Encoder**: Point-BERT style encoder with FPS + KNN tokenization
-3. **Text Encoder**: Frozen LLM (Qwen2.5-3B) with hierarchical encoding
+2. **Point Cloud Encoder**: ULIP-2 Point-BERT encoder with FPS + KNN tokenization (10K points)
+3. **Text Encoder**: Frozen LLM (Phi-4-mini) with hierarchical encoding
 4. **Hierarchical Compression Module**: GSC (Global Structure Compression) + ADM (Adaptive Detail Mining)
 5. **Multi-task Losses**: InfoNCE contrastive + local matching + reconstruction
 
@@ -80,6 +80,29 @@ The B-Rep encoder follows AutoBrep's FSQ VAE architecture:
 
 For CLIP4CAD, we use continuous features (pre-FSQ quantization) for contrastive learning.
 
+### ULIP-2 Weights (Point Cloud Encoder)
+
+The point cloud encoder uses [ULIP-2](https://github.com/salesforce/ULIP) Point-BERT pretrained weights. Weights are automatically downloaded when running the pre-computation script.
+
+```bash
+# Pre-compute point cloud features (auto-downloads weights)
+python scripts/precompute_pointcloud_features.py --data-root data/mmcad --download-weights
+```
+
+Weights are downloaded from [HuggingFace SFXX/ulip](https://huggingface.co/datasets/SFXX/ulip).
+
+### Point Cloud Encoder Architecture
+
+The point cloud encoder follows ULIP-2's Point-BERT architecture:
+
+| Component | Details |
+|-----------|---------|
+| Input | 10K points with xyz + normals (6 channels) |
+| Tokenizer | FPS (512 groups) + KNN (32 neighbors) |
+| Mini-PointNet | 64 → 128 → 256 → 768 |
+| Transformer | 12 layers, 12 heads, 768 dim |
+| Output | 513 tokens (1 CLS + 512 groups) × 768 dim |
+
 ## Project Structure
 
 ```
@@ -118,9 +141,12 @@ MMCAD/
 │   ├── train.py
 │   ├── evaluate.py
 │   ├── extract_features.py
-│   └── download_autobrep_weights.py
+│   ├── download_autobrep_weights.py
+│   ├── precompute_text_embeddings.py      # Pre-compute LLM embeddings
+│   └── precompute_pointcloud_features.py  # Pre-compute Point-BERT features
 └── pretrained/
-    └── autobrep/                    # AutoBrep FSQ VAE weights
+    ├── autobrep/                    # AutoBrep FSQ VAE weights
+    └── pointbert/                   # ULIP-2 Point-BERT weights
 ```
 
 ## Data Preparation
@@ -130,15 +156,41 @@ The MMCAD:B dataset should be organized as follows:
 ```
 data/mmcad/
 ├── brep/
-│   ├── {sample_id}.npz          # Contains face_grids, edge_curves
+│   ├── {sample_id}_faces.npy    # [F, 32, 32, 3] face point grids
+│   ├── {sample_id}_edges.npy    # [E, 32, 3] edge curves
+│   └── {sample_id}_adjacency.npy # [F, E] adjacency matrix
 ├── pointcloud/
-│   ├── {sample_id}.npy          # Point cloud [N, 3]
+│   └── {sample_id}.ply          # PLY with 10K points (xyz + normals)
+│   or  {sample_id}.npy          # [N, 6] array (fallback)
 ├── text/
 │   ├── {sample_id}.json         # Contains title, description
+├── embeddings/                  # Pre-computed features (optional)
+│   ├── train_text_embeddings.h5
+│   ├── val_text_embeddings.h5
+│   ├── train_pointcloud_features.h5
+│   └── val_pointcloud_features.h5
 └── splits/
     ├── train.txt
     ├── val.txt
     └── test.txt
+```
+
+### Point Cloud Format (PLY)
+
+Point clouds should be stored as binary PLY files with 10K vertices:
+
+```
+ply
+format binary_little_endian 1.0
+element vertex 10000
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+end_header
+<binary data>
 ```
 
 ## Training
@@ -165,6 +217,28 @@ Then enable cached embeddings in your training config:
 python scripts/train.py data.use_cached_text_embeddings=true
 ```
 
+### Pre-compute Point Cloud Features (Recommended)
+
+Since the point cloud encoder (ULIP-2 Point-BERT) is frozen during training, you can pre-compute features once and reuse them.
+
+```bash
+# Pre-compute features using ULIP-2 Point-BERT
+python scripts/precompute_pointcloud_features.py \
+    --data-root data/mmcad \
+    --download-weights \
+    --batch-size 32
+
+# This creates HDF5 files in data/mmcad/embeddings/
+#   - train_pointcloud_features.h5
+#   - val_pointcloud_features.h5
+#   - test_pointcloud_features.h5
+```
+
+Then enable cached features in your training config:
+```bash
+python scripts/train.py data.use_cached_pc_features=true
+```
+
 ### Two-Stage Training
 
 CLIP4CAD-H uses two-stage training:
@@ -179,8 +253,10 @@ python scripts/download_autobrep_weights.py
 # Default training (with live LLM inference)
 python scripts/train.py
 
-# Training with pre-computed text embeddings (recommended)
-python scripts/train.py data.use_cached_text_embeddings=true
+# Training with pre-computed embeddings (recommended)
+python scripts/train.py \
+    data.use_cached_text_embeddings=true \
+    data.use_cached_pc_features=true
 
 # With pretrained AutoBrep weights
 python scripts/train.py \
@@ -263,10 +339,11 @@ python scripts/extract_features.py \
 |-----------|-----------|
 | Unified Space | 256 |
 | Projection Head | 128 |
-| LLM Features | 3072 (Qwen2.5-3B) |
+| LLM Features | 3072 (Phi-4-mini) |
 | B-Rep Face Features | 48 (AutoBrep surfZ) |
 | B-Rep Edge Features | 12 (AutoBrep edgeZ) |
-| Point Tokens | 384 |
+| Point Cloud Input | 10K points × 6 channels |
+| Point Tokens | 513 × 768 (ULIP-2 Point-BERT) |
 
 ## Citation
 
@@ -287,6 +364,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 This implementation builds upon ideas from:
 - [AutoBrep](https://github.com/AutodeskAILab/AutoBrep) - B-Rep FSQ VAE encoder architecture and pretrained weights
+- [ULIP-2](https://github.com/salesforce/ULIP) - Point-BERT encoder and pretrained weights
 - [HCC-CAD](https://github.com/HCC-CAD) - Hierarchical compression concepts
 - [OpenShape](https://github.com/Colin97/OpenShape) - Contrastive learning patterns
 - [ShapeLLM](https://github.com/ShapeLLM) - Multimodal alignment strategies

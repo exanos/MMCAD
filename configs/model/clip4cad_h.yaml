@@ -44,17 +44,33 @@ encoders:
     edge_checkpoint: null     # e.g., pretrained/autobrep/edge_fsq_vae.pt
     freeze: false  # Fine-tune for contrastive learning
 
-  # Point cloud encoder (Point-BERT)
+  # Point cloud encoder (ULIP-2 Point-BERT)
+  # Reference: https://github.com/salesforce/ULIP
+  # Weights: https://huggingface.co/datasets/SFXX/ulip
   pointcloud:
-    model: pointbert
-    checkpoint: null  # Path to ULIP-2 pretrained weights
-    output_dim: 384
-    num_tokens: 513  # 512 groups + 1 CLS
+    model: ulip2-pointbert
+    checkpoint: null  # Path to ULIP-2 pretrained weights (auto-download if null)
+    # Run: python scripts/precompute_pointcloud_features.py --download-weights
+
+    # Input settings
+    num_points: 10000     # 10K points per sample
+    in_channels: 6        # xyz + normals
+
+    # ULIP-2 Point-BERT architecture
+    output_dim: 768       # ULIP-2 uses 768 (not 384)
+    num_tokens: 513       # 512 groups + 1 CLS
     num_groups: 512
     group_size: 32
     num_layers: 12
-    num_heads: 6
-    freeze: true
+    num_heads: 12         # ULIP-2 uses 12 heads (not 6)
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    drop_path_rate: 0.1
+
+    freeze: true  # Freeze encoder, use pre-computed features
+    # Pre-computed features (recommended for training)
+    # Run: python scripts/precompute_pointcloud_features.py --data-root data/mmcad
+    use_cached_features: false  # Set to true to use pre-computed features
 
   # Text encoder (LLM)
   # Recommended: microsoft/Phi-4-mini-instruct (3072 hidden dim)

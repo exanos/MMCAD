@@ -8,21 +8,39 @@ Expected data organization:
     │   ├── {id}_edges.npy      # [E, 32, 3] edge curves
     │   └── {id}_adjacency.npy  # [F, E] adjacency matrix
     ├── pointcloud/
-    │   └── {id}.npy            # [N, 3] or [N, 6] with normals
+    │   └── {id}.ply            # PLY with 10K points (xyz + normals)
+    │   or  {id}.npy            # [N, 3] or [N, 6] with normals (fallback)
     ├── text/
     │   ├── titles.json         # {id: "title"}
     │   └── descriptions.json   # {id: "description"}
-    ├── embeddings/             # Pre-computed text embeddings (optional)
+    ├── embeddings/             # Pre-computed embeddings (optional)
     │   ├── train_text_embeddings.h5
     │   ├── val_text_embeddings.h5
-    │   └── test_text_embeddings.h5
+    │   ├── test_text_embeddings.h5
+    │   ├── train_pointcloud_features.h5  # Pre-computed PC features
+    │   ├── val_pointcloud_features.h5
+    │   └── test_pointcloud_features.h5
     └── splits/
         ├── train.txt
         ├── val.txt
         └── test.txt
+
+PLY file format (binary_little_endian):
+    ply
+    format binary_little_endian 1.0
+    element vertex 10000
+    property float x
+    property float y
+    property float z
+    property float nx
+    property float ny
+    property float nz
+    end_header
+    <binary data: 10000 vertices * 6 floats * 4 bytes = 240000 bytes>
 """
 
 import json
+import struct
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -38,6 +56,77 @@ from .augmentation import (
     normalize_to_bbox,
     normalize_pointcloud,
 )
+
+
+def load_ply_file(filepath: str, num_points: int = 10000) -> np.ndarray:
+    """
+    Load PLY file with positions and normals.
+
+    Supports binary_little_endian format with structure:
+    - x, y, z (float)
+    - nx, ny, nz (float)
+
+    Args:
+        filepath: Path to PLY file
+        num_points: Number of points to return (subsample or pad)
+
+    Returns:
+        points: [num_points, 6] array (xyz + normals)
+    """
+    with open(filepath, "rb") as f:
+        # Read header
+        header_lines = []
+        while True:
+            line = f.readline().decode("utf-8").strip()
+            header_lines.append(line)
+            if line == "end_header":
+                break
+
+        # Parse header
+        n_vertices = 0
+        properties = []
+        for line in header_lines:
+            if line.startswith("element vertex"):
+                n_vertices = int(line.split()[-1])
+            elif line.startswith("property float"):
+                properties.append(line.split()[-1])
+
+        # Determine format
+        has_normals = "nx" in properties and "ny" in properties and "nz" in properties
+        n_floats = len(properties)
+
+        # Read binary data
+        data = np.frombuffer(
+            f.read(n_vertices * n_floats * 4),
+            dtype=np.float32
+        ).reshape(n_vertices, n_floats)
+
+        # Extract xyz and normals
+        xyz = data[:, :3]
+        if has_normals:
+            # Find indices for normals (in case there are other properties between)
+            nx_idx = properties.index("nx")
+            ny_idx = properties.index("ny")
+            nz_idx = properties.index("nz")
+            normals = data[:, [nx_idx, ny_idx, nz_idx]]
+            points = np.concatenate([xyz, normals], axis=1)
+        else:
+            # Use zeros for normals
+            normals = np.zeros_like(xyz)
+            points = np.concatenate([xyz, normals], axis=1)
+
+    # Handle point count
+    n = points.shape[0]
+    if n > num_points:
+        # Random subsample
+        idx = np.random.choice(n, num_points, replace=False)
+        points = points[idx]
+    elif n < num_points:
+        # Pad by repeating
+        pad_idx = np.random.choice(n, num_points - n, replace=True)
+        points = np.concatenate([points, points[pad_idx]], axis=0)
+
+    return points.astype(np.float32)
 
 
 class TextEmbeddingCache:
@@ -112,6 +201,78 @@ class TextEmbeddingCache:
         self.close()
 
 
+class PointCloudFeatureCache:
+    """
+    Manages pre-computed point cloud features stored in HDF5 files.
+
+    Stores Point-BERT encoder outputs (CLS token + group tokens) to
+    avoid re-encoding during training when encoder is frozen.
+    """
+
+    def __init__(self, hdf5_path: str):
+        import h5py
+
+        self.hdf5_path = Path(hdf5_path)
+        if not self.hdf5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
+
+        # Open file and build index
+        self.file = h5py.File(hdf5_path, "r")
+
+        # Build sample_id -> index mapping
+        sample_ids = self.file["sample_ids"][:]
+        self.id_to_idx = {
+            (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+            for i, sid in enumerate(sample_ids)
+        }
+
+        # Store metadata
+        self.embed_dim = self.file.attrs.get("embed_dim", 768)
+        self.num_tokens = self.file.attrs.get("num_tokens", 513)  # CLS + 512 groups
+        self.model_config = self.file.attrs.get("model_config", "ulip2-pointbert")
+
+        print(f"Loaded point cloud feature cache: {hdf5_path}")
+        print(f"  - {len(self.id_to_idx)} samples")
+        print(f"  - embed_dim: {self.embed_dim}")
+        print(f"  - num_tokens: {self.num_tokens}")
+        print(f"  - model: {self.model_config}")
+
+    def __len__(self):
+        return len(self.id_to_idx)
+
+    def __contains__(self, sample_id: str):
+        return sample_id in self.id_to_idx
+
+    def get(self, sample_id: str) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Get features for a sample.
+
+        Returns:
+            Dictionary with:
+                - pc_features: [num_tokens, embed_dim] - all tokens (CLS first)
+                - pc_cls: [embed_dim] - CLS token only (global feature)
+        """
+        if sample_id not in self.id_to_idx:
+            return None
+
+        idx = self.id_to_idx[sample_id]
+
+        features = self.file["features"][idx]  # [num_tokens, embed_dim]
+
+        return {
+            "pc_features": features,
+            "pc_cls": features[0],  # CLS token is first
+        }
+
+    def close(self):
+        """Close the HDF5 file."""
+        if hasattr(self, "file") and self.file:
+            self.file.close()
+
+    def __del__(self):
+        self.close()
+
+
 class MMCADDataset(Dataset):
     """
     Multimodal CAD dataset with B-Rep, point cloud, and hierarchical text.
@@ -130,7 +291,8 @@ class MMCADDataset(Dataset):
         tokenizer: Optional[Any] = None,
         max_faces: int = 64,
         max_edges: int = 128,
-        num_points: int = 2048,
+        num_points: int = 10000,  # 10K for ULIP-2 compatibility
+        point_channels: int = 6,  # xyz + normals
         face_grid_size: int = 32,
         edge_curve_size: int = 32,
         max_title_len: int = 64,
@@ -138,8 +300,9 @@ class MMCADDataset(Dataset):
         rotation_augment: bool = False,
         point_jitter: float = 0.0,
         # Pre-computed embeddings
-        text_embeddings_dir: Optional[str] = None,
+        embeddings_dir: Optional[str] = None,
         use_cached_text_embeddings: bool = False,
+        use_cached_pc_features: bool = False,
     ):
         """
         Args:
@@ -148,15 +311,17 @@ class MMCADDataset(Dataset):
             tokenizer: HuggingFace tokenizer for text (not needed if using cached)
             max_faces: Maximum number of faces to load
             max_edges: Maximum number of edges to load
-            num_points: Number of points in point cloud
+            num_points: Number of points in point cloud (default 10K for ULIP-2)
+            point_channels: Number of point channels (3 for xyz, 6 for xyz+normals)
             face_grid_size: Size of face UV grid (face_grid_size x face_grid_size)
             edge_curve_size: Number of points per edge curve
             max_title_len: Maximum title token length
             max_desc_len: Maximum description token length
             rotation_augment: Whether to apply rotation augmentation
             point_jitter: Standard deviation for point jitter
-            text_embeddings_dir: Directory containing pre-computed embeddings
-            use_cached_text_embeddings: Whether to use pre-computed embeddings
+            embeddings_dir: Directory containing pre-computed embeddings
+            use_cached_text_embeddings: Whether to use pre-computed text embeddings
+            use_cached_pc_features: Whether to use pre-computed point cloud features
         """
         self.data_root = Path(data_root)
         self.split = split
@@ -164,6 +329,7 @@ class MMCADDataset(Dataset):
         self.max_faces = max_faces
         self.max_edges = max_edges
         self.num_points = num_points
+        self.point_channels = point_channels
         self.face_grid_size = face_grid_size
         self.edge_curve_size = edge_curve_size
         self.max_title_len = max_title_len
@@ -171,6 +337,7 @@ class MMCADDataset(Dataset):
         self.augment = rotation_augment and (split == "train")
         self.point_jitter = point_jitter if split == "train" else 0.0
         self.use_cached_text_embeddings = use_cached_text_embeddings
+        self.use_cached_pc_features = use_cached_pc_features
 
         # Load split
         split_file = self.data_root / "splits" / f"{split}.txt"
@@ -181,21 +348,33 @@ class MMCADDataset(Dataset):
             # If no split file, try to find all samples
             self.sample_ids = self._discover_samples()
 
+        # Embeddings directory
+        if embeddings_dir is None:
+            embeddings_dir = self.data_root / "embeddings"
+        else:
+            embeddings_dir = Path(embeddings_dir)
+
         # Load text embedding cache if requested
         self.text_cache = None
         if use_cached_text_embeddings:
-            if text_embeddings_dir is None:
-                text_embeddings_dir = self.data_root / "embeddings"
-            else:
-                text_embeddings_dir = Path(text_embeddings_dir)
-
-            cache_file = text_embeddings_dir / f"{split}_text_embeddings.h5"
+            cache_file = embeddings_dir / f"{split}_text_embeddings.h5"
             if cache_file.exists():
                 self.text_cache = TextEmbeddingCache(str(cache_file))
             else:
                 print(f"Warning: Text embedding cache not found: {cache_file}")
                 print("Falling back to tokenization (requires tokenizer)")
                 self.use_cached_text_embeddings = False
+
+        # Load point cloud feature cache if requested
+        self.pc_cache = None
+        if use_cached_pc_features:
+            pc_cache_file = embeddings_dir / f"{split}_pointcloud_features.h5"
+            if pc_cache_file.exists():
+                self.pc_cache = PointCloudFeatureCache(str(pc_cache_file))
+            else:
+                print(f"Warning: Point cloud feature cache not found: {pc_cache_file}")
+                print("Falling back to loading raw point clouds")
+                self.use_cached_pc_features = False
 
         # Load text data (for fallback or if not using cache)
         if not self.use_cached_text_embeddings or self.text_cache is None:
@@ -227,6 +406,8 @@ class MMCADDataset(Dataset):
         print(f"Loaded {len(self.sample_ids)} samples for {split}")
         if self.use_cached_text_embeddings and self.text_cache:
             print(f"Using pre-computed text embeddings")
+        if self.use_cached_pc_features and self.pc_cache:
+            print(f"Using pre-computed point cloud features")
 
     def _discover_samples(self) -> List[str]:
         """Discover sample IDs from available data."""
@@ -239,9 +420,13 @@ class MMCADDataset(Dataset):
                 sample_id = f.stem.replace("_faces", "")
                 sample_ids.add(sample_id)
 
-        # Check point cloud directory
+        # Check point cloud directory (PLY files preferred, NPY as fallback)
         pc_dir = self.data_root / "pointcloud"
         if pc_dir.exists():
+            # PLY files (10K points with normals)
+            for f in pc_dir.glob("*.ply"):
+                sample_ids.add(f.stem)
+            # NPY files (fallback)
             for f in pc_dir.glob("*.npy"):
                 sample_ids.add(f.stem)
 
@@ -269,13 +454,22 @@ class MMCADDataset(Dataset):
             output.update(self._get_empty_brep())
 
         # Load point cloud (if available)
-        pc_data = self._load_pointcloud(sample_id, rotation_matrix)
-        if pc_data is not None:
-            output.update(pc_data)
-            output["has_pointcloud"] = True
+        if self.use_cached_pc_features and self.pc_cache:
+            pc_data = self._load_cached_pc_features(sample_id)
+            if pc_data is not None:
+                output.update(pc_data)
+                output["has_pointcloud"] = True
+            else:
+                output["has_pointcloud"] = False
+                output.update(self._get_empty_pc_features())
         else:
-            output["has_pointcloud"] = False
-            output.update(self._get_empty_pointcloud())
+            pc_data = self._load_pointcloud(sample_id, rotation_matrix)
+            if pc_data is not None:
+                output.update(pc_data)
+                output["has_pointcloud"] = True
+            else:
+                output["has_pointcloud"] = False
+                output.update(self._get_empty_pointcloud())
 
         # Load text (cached or tokenized)
         if self.use_cached_text_embeddings and self.text_cache:
@@ -301,7 +495,7 @@ class MMCADDataset(Dataset):
 
     def _get_empty_pointcloud(self) -> Dict[str, torch.Tensor]:
         """Return empty point cloud tensor for missing data."""
-        return {"points": torch.zeros(self.num_points, 3)}
+        return {"points": torch.zeros(self.num_points, self.point_channels)}
 
     def _load_brep(
         self, sample_id: str, rotation_matrix: Optional[torch.Tensor]
@@ -394,45 +588,98 @@ class MMCADDataset(Dataset):
     def _load_pointcloud(
         self, sample_id: str, rotation_matrix: Optional[torch.Tensor]
     ) -> Optional[Dict[str, torch.Tensor]]:
-        """Load and process point cloud."""
-        pc_path = self.data_root / "pointcloud" / f"{sample_id}.npy"
+        """Load and process point cloud from PLY or NPY file."""
+        pc_dir = self.data_root / "pointcloud"
 
-        if not pc_path.exists():
+        # Try PLY first (preferred format for 10K points with normals)
+        ply_path = pc_dir / f"{sample_id}.ply"
+        npy_path = pc_dir / f"{sample_id}.npy"
+
+        if ply_path.exists():
+            # Load PLY file (returns [N, 6] with xyz + normals)
+            points = load_ply_file(str(ply_path), num_points=self.num_points)
+        elif npy_path.exists():
+            points = np.load(npy_path).astype(np.float32)
+        else:
             return None
 
-        points = np.load(pc_path).astype(np.float32)
+        # Ensure we have the right shape
+        N = points.shape[0]
+        C = points.shape[1] if len(points.shape) > 1 else 1
 
-        # Handle points with normals [N, 6] vs just positions [N, 3]
-        if points.shape[1] >= 6:
+        # Handle different input formats
+        if C >= 6:
+            # Already has normals: [N, 6+]
             positions = points[:, :3]
+            normals = points[:, 3:6]
+        elif C >= 3:
+            # Just positions: [N, 3]
+            positions = points[:, :3]
+            # Zero normals (or could estimate them)
+            normals = np.zeros_like(positions)
         else:
-            positions = points[:, :3] if points.shape[1] >= 3 else points
-
-        N = positions.shape[0]
+            return None
 
         # Subsample or pad to exact size
         if N > self.num_points:
             idx = np.random.choice(N, self.num_points, replace=False)
             positions = positions[idx]
+            normals = normals[idx]
         elif N < self.num_points:
             pad_idx = np.random.choice(N, self.num_points - N, replace=True)
             positions = np.concatenate([positions, positions[pad_idx]], axis=0)
+            normals = np.concatenate([normals, normals[pad_idx]], axis=0)
 
-        # Convert to tensor
+        # Convert to tensors
         positions = torch.from_numpy(positions)
+        normals = torch.from_numpy(normals)
 
-        # Apply rotation
+        # Apply rotation to both positions and normals
         if rotation_matrix is not None:
             positions = rotate_pointcloud(positions, rotation_matrix)
+            normals = rotate_pointcloud(normals, rotation_matrix)
 
-        # Normalize to unit sphere
+        # Normalize positions to unit sphere
         positions = normalize_pointcloud(positions)
 
-        # Apply jitter
+        # Re-normalize normals (they should stay unit vectors)
+        normal_norms = torch.norm(normals, dim=-1, keepdim=True).clamp(min=1e-8)
+        normals = normals / normal_norms
+
+        # Apply jitter to positions only
         if self.point_jitter > 0:
             positions = random_point_jitter(positions, std=self.point_jitter)
 
-        return {"points": positions}
+        # Return based on configured channels
+        if self.point_channels >= 6:
+            points_out = torch.cat([positions, normals], dim=-1)
+        else:
+            points_out = positions
+
+        return {"points": points_out}
+
+    def _load_cached_pc_features(self, sample_id: str) -> Optional[Dict[str, torch.Tensor]]:
+        """Load pre-computed point cloud features."""
+        cached = self.pc_cache.get(sample_id)
+
+        if cached is None:
+            return None
+
+        return {
+            "pc_features": torch.from_numpy(cached["pc_features"].astype(np.float32)),
+            "pc_cls": torch.from_numpy(cached["pc_cls"].astype(np.float32)),
+            "use_cached_pc_features": True,
+        }
+
+    def _get_empty_pc_features(self) -> Dict[str, torch.Tensor]:
+        """Return empty point cloud features for missing data."""
+        embed_dim = self.pc_cache.embed_dim if self.pc_cache else 768
+        num_tokens = self.pc_cache.num_tokens if self.pc_cache else 513
+        return {
+            "pc_features": torch.zeros(num_tokens, embed_dim),
+            "pc_cls": torch.zeros(embed_dim),
+            "use_cached_pc_features": True,
+        }
 
     def _load_cached_text(self, sample_id: str) -> Dict[str, torch.Tensor]:
         """Load pre-computed text embeddings."""
@@ -509,26 +756,37 @@ def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     has_brep = [s["has_brep"] for s in batch]
     has_pc = [s["has_pointcloud"] for s in batch]
     has_text = [s["has_text"] for s in batch]
-    use_cached = [s.get("use_cached_embeddings", False) for s in batch]
+    use_cached_text = [s.get("use_cached_embeddings", False) for s in batch]
+    use_cached_pc = [s.get("use_cached_pc_features", False) for s in batch]
 
     collated["has_brep"] = torch.tensor(has_brep)
     collated["has_pointcloud"] = torch.tensor(has_pc)
     collated["has_text"] = torch.tensor(has_text)
-    collated["use_cached_embeddings"] = all(use_cached)
+    collated["use_cached_embeddings"] = all(use_cached_text)
+    collated["use_cached_pc_features"] = all(use_cached_pc)
 
-    # Geometry tensor keys
-    geometry_keys = [
+    # B-Rep tensor keys
+    brep_keys = [
         "brep_faces",
         "brep_edges",
         "brep_face_mask",
         "brep_edge_mask",
         "brep_adjacency",
-        "points",
     ]
 
-    for key in geometry_keys:
+    for key in brep_keys:
         if key in batch[0]:
             collated[key] = torch.stack([s[key] for s in batch])
+
+    # Point cloud keys - either raw points or cached features
+    if collated["use_cached_pc_features"]:
+        # Stack cached features
+        collated["pc_features"] = torch.stack([s["pc_features"] for s in batch])
+        collated["pc_cls"] = torch.stack([s["pc_cls"] for s in batch])
+    else:
+        # Stack raw point clouds
+        if "points" in batch[0]:
+            collated["points"] = torch.stack([s["points"] for s in batch])
 
     # Text keys - depends on whether using cached embeddings
     if collated["use_cached_embeddings"]:

@@ -69,15 +69,21 @@ class CLIP4CAD_H(nn.Module):
             freeze=brep_cfg.get("freeze", False),
         )
 
-        # Point cloud encoder
+        # Point cloud encoder (ULIP-2 Point-BERT)
+        pc_cfg = config.encoders.pointcloud
         self.pc_encoder = PointBertEncoder(
-            num_groups=config.encoders.pointcloud.get("num_groups", 512),
-            group_size=config.encoders.pointcloud.get("group_size", 32),
-            hidden_dim=config.encoders.pointcloud.output_dim,
-            num_layers=config.encoders.pointcloud.get("num_layers", 12),
-            num_heads=config.encoders.pointcloud.get("num_heads", 6),
-            checkpoint_path=config.encoders.pointcloud.get("checkpoint"),
-            freeze=config.encoders.pointcloud.freeze,
+            num_points=pc_cfg.get("num_points", 10000),
+            in_channels=pc_cfg.get("in_channels", 6),
+            embed_dim=pc_cfg.output_dim,
+            depth=pc_cfg.get("num_layers", 12),
+            num_heads=pc_cfg.get("num_heads", 12),
+            num_groups=pc_cfg.get("num_groups", 512),
+            group_size=pc_cfg.get("group_size", 32),
+            mlp_ratio=pc_cfg.get("mlp_ratio", 4.0),
+            drop_rate=pc_cfg.get("drop_rate", 0.0),
+            drop_path_rate=pc_cfg.get("drop_path_rate", 0.1),
+            checkpoint_path=pc_cfg.get("checkpoint"),
+            freeze=pc_cfg.freeze,
         )
 
         # Text encoder (LLM) - initialized lazily
