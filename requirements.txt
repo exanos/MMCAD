@@ -11,6 +11,7 @@ omegaconf>=2.3.0
 # Transformers
 transformers>=4.36.0
 accelerate>=0.25.0
+huggingface_hub>=0.20.0
 
 # Point cloud processing
 einops>=0.7.0

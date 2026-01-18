@@ -12,7 +12,7 @@ CLIP4CAD-H is designed to learn representations that:
 
 ### Key Components
 
-1. **B-Rep Encoder**: Encodes face point grids and edge curves using 2D/1D convolutions
+1. **B-Rep Encoder**: AutoBrep-style FSQ VAE encoder for face grids and edge curves
 2. **Point Cloud Encoder**: Point-BERT style encoder with FPS + KNN tokenization
 3. **Text Encoder**: Frozen LLM (Qwen2.5-3B) with hierarchical encoding
 4. **Hierarchical Compression Module**: GSC (Global Structure Compression) + ADM (Adaptive Detail Mining)
@@ -43,6 +43,43 @@ pip install -e .
 - CUDA 11.8+
 - ~24GB VRAM (RTX 4090 recommended)
 
+## Pretrained Weights
+
+### AutoBrep Weights (B-Rep Encoder)
+
+The B-Rep encoder is based on [AutoBrep](https://github.com/AutodeskAILab/AutoBrep) and can be initialized with pretrained FSQ VAE weights from HuggingFace.
+
+```bash
+# Download pretrained AutoBrep weights
+python scripts/download_autobrep_weights.py --output-dir pretrained/autobrep
+```
+
+This downloads the surface and edge FSQ VAE checkpoints from [SamGiantEagle/AutoBrep](https://huggingface.co/SamGiantEagle/AutoBrep).
+
+Then update your config to use the pretrained weights:
+
+```yaml
+# In configs/model/clip4cad_h.yaml
+encoders:
+  brep:
+    surface_checkpoint: pretrained/autobrep/surface_fsq_vae.pt
+    edge_checkpoint: pretrained/autobrep/edge_fsq_vae.pt
+```
+
+### B-Rep Encoder Architecture
+
+The B-Rep encoder follows AutoBrep's FSQ VAE architecture:
+
+| Component | Details |
+|-----------|---------|
+| Surface Encoder | 2D CNN with channel mult [1,2,4,8], 16 latent channels |
+| Edge Encoder | 1D CNN with channel mult [1,2,4], 4 latent channels |
+| FSQ Levels | [8, 5, 5, 5] = 1000 codebook entries |
+| Face Output | 48-dim (3 × 16, matching AutoBrep XAEncoder surfZ) |
+| Edge Output | 12-dim (3 × 4, matching AutoBrep XAEncoder edgeZ) |
+
+For CLIP4CAD, we use continuous features (pre-FSQ quantization) for contrastive learning.
+
 ## Project Structure
 
 ```
@@ -50,9 +87,10 @@ MMCAD/
 ├── clip4cad/
 │   ├── models/
 │   │   ├── encoders/
-│   │   │   ├── brep_encoder.py      # B-Rep face/edge encoder
+│   │   │   ├── brep_encoder.py      # AutoBrep-style FSQ VAE encoder
 │   │   │   ├── pointbert_encoder.py # Point-BERT encoder
 │   │   │   └── unified_projection.py
+│   │   ├── fsq.py                   # Finite Scalar Quantization
 │   │   ├── text_encoder.py          # Hierarchical text encoder
 │   │   ├── hierarchical_compression.py  # GSC + ADM
 │   │   ├── clip4cad_h.py            # Main model
@@ -79,8 +117,10 @@ MMCAD/
 ├── scripts/
 │   ├── train.py
 │   ├── evaluate.py
-│   └── extract_features.py
+│   ├── extract_features.py
+│   └── download_autobrep_weights.py
 └── pretrained/
+    └── autobrep/                    # AutoBrep FSQ VAE weights
 ```
 
 ## Data Preparation
@@ -111,8 +151,16 @@ CLIP4CAD-H uses two-stage training:
 2. **Stage 2** (epochs 41-100): Add local contrastive alignment
 
 ```bash
+# Download pretrained weights first
+python scripts/download_autobrep_weights.py
+
 # Default training
 python scripts/train.py
+
+# With pretrained AutoBrep weights
+python scripts/train.py \
+    model.encoders.brep.surface_checkpoint=pretrained/autobrep/surface_fsq_vae.pt \
+    model.encoders.brep.edge_checkpoint=pretrained/autobrep/edge_fsq_vae.pt
 
 # Custom configuration
 python scripts/train.py training.epochs=50 data.batch_size=16
@@ -191,7 +239,8 @@ python scripts/extract_features.py \
 | Unified Space | 256 |
 | Projection Head | 128 |
 | LLM Features | 3072 (Qwen2.5-3B) |
-| B-Rep Face Features | 256 |
+| B-Rep Face Features | 48 (AutoBrep surfZ) |
+| B-Rep Edge Features | 12 (AutoBrep edgeZ) |
 | Point Tokens | 384 |
 
 ## Citation
@@ -212,7 +261,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 This implementation builds upon ideas from:
-- [HCC-CAD](https://github.com/HCC-CAD) for hierarchical compression concepts
-- [OpenShape](https://github.com/Colin97/OpenShape) for contrastive learning patterns
-- [AutoBrep](https://github.com/AutoBrep) for B-Rep encoding architecture
-- [ShapeLLM](https://github.com/ShapeLLM) for multimodal alignment strategies
+- [AutoBrep](https://github.com/AutodeskAILab/AutoBrep) - B-Rep FSQ VAE encoder architecture and pretrained weights
+- [HCC-CAD](https://github.com/HCC-CAD) - Hierarchical compression concepts
+- [OpenShape](https://github.com/Colin97/OpenShape) - Contrastive learning patterns
+- [ShapeLLM](https://github.com/ShapeLLM) - Multimodal alignment strategies

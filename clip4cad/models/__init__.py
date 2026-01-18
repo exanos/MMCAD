@@ -12,10 +12,14 @@ from .clip4cad_h import CLIP4CAD_H
 from .hierarchical_compression import HierarchicalCompressionModule
 from .text_encoder import HierarchicalTextEncoder
 from .reconstruction_decoder import ReconstructionDecoder
+from .fsq import FSQ, SurfaceFSQEncoder, EdgeFSQEncoder
 
 __all__ = [
     "CLIP4CAD_H",
     "HierarchicalCompressionModule",
     "HierarchicalTextEncoder",
     "ReconstructionDecoder",
+    "FSQ",
+    "SurfaceFSQEncoder",
+    "EdgeFSQEncoder",
 ]

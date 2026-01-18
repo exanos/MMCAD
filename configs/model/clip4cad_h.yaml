@@ -15,14 +15,34 @@ compression:
 
 # Encoder configurations
 encoders:
-  # B-Rep encoder (AutoBrep-style)
+  # B-Rep encoder (AutoBrep-style FSQ VAE)
+  # Reference: https://github.com/AutodeskAILab/AutoBrep
   brep:
-    face_dim: 32
-    edge_dim: 16
+    # Output dimensions (matching AutoBrep XAEncoder)
+    face_dim: 48  # 3 * 16 (surfZ dimension)
+    edge_dim: 12  # 3 * 4 (edgeZ dimension)
+
+    # Input sizes
     face_grid_size: 32  # 32x32 UV grid
     edge_curve_size: 32  # 32 points per edge
-    checkpoint: null  # Path to pretrained AutoBrep weights
-    freeze: true
+
+    # Architecture (matching AutoBrep defaults)
+    face_base_channels: 64
+    face_channel_mult: [1, 2, 4, 8]
+    face_latent_channels: 16
+    edge_base_channels: 64
+    edge_channel_mult: [1, 2, 4]
+    edge_latent_channels: 4
+
+    # FSQ settings (AutoBrep uses levels [8,5,5,5] = 1000 codebook)
+    fsq_levels: [8, 5, 5, 5]
+    use_fsq: false  # We use continuous features for contrastive learning
+
+    # Pretrained weights from HuggingFace: SamGiantEagle/AutoBrep
+    # Run: python scripts/download_autobrep_weights.py
+    surface_checkpoint: null  # e.g., pretrained/autobrep/surface_fsq_vae.pt
+    edge_checkpoint: null     # e.g., pretrained/autobrep/edge_fsq_vae.pt
+    freeze: false  # Fine-tune for contrastive learning
 
   # Point cloud encoder (Point-BERT)
   pointcloud:
@@ -37,9 +57,10 @@ encoders:
     freeze: true
 
   # Text encoder (LLM)
+  # Options: Qwen/Qwen2.5-3B-Instruct, microsoft/phi-2, Qwen/Qwen3-4B
   text:
-    model_name: microsoft/phi-2  # Or Qwen/Qwen2.5-3B-Instruct
-    hidden_dim: 2560  # phi-2: 2560, Qwen2.5-3B: 2048
+    model_name: Qwen/Qwen2.5-3B-Instruct
+    hidden_dim: 3072  # Qwen2.5-3B: 3072, phi-2: 2560
     freeze: true
     use_fp16: true
 

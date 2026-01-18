@@ -49,14 +49,24 @@ class CLIP4CAD_H(nn.Module):
         # Pretrained Encoders
         # ============================================================
 
-        # B-Rep encoder
+        # B-Rep encoder (AutoBrep-style FSQ VAE)
+        brep_cfg = config.encoders.brep
         self.brep_encoder = BRepEncoder(
-            face_dim=config.encoders.brep.face_dim,
-            edge_dim=config.encoders.brep.edge_dim,
-            face_grid_size=config.encoders.brep.get("face_grid_size", 32),
-            edge_curve_size=config.encoders.brep.get("edge_curve_size", 32),
-            checkpoint_path=config.encoders.brep.get("checkpoint"),
-            freeze=config.encoders.brep.freeze,
+            face_dim=brep_cfg.face_dim,
+            edge_dim=brep_cfg.edge_dim,
+            face_grid_size=brep_cfg.get("face_grid_size", 32),
+            edge_curve_size=brep_cfg.get("edge_curve_size", 32),
+            face_base_channels=brep_cfg.get("face_base_channels", 64),
+            face_channel_mult=tuple(brep_cfg.get("face_channel_mult", [1, 2, 4, 8])),
+            face_latent_channels=brep_cfg.get("face_latent_channels", 16),
+            edge_base_channels=brep_cfg.get("edge_base_channels", 64),
+            edge_channel_mult=tuple(brep_cfg.get("edge_channel_mult", [1, 2, 4])),
+            edge_latent_channels=brep_cfg.get("edge_latent_channels", 4),
+            fsq_levels=tuple(brep_cfg.get("fsq_levels", [8, 5, 5, 5])),
+            use_fsq=brep_cfg.get("use_fsq", False),
+            surface_checkpoint=brep_cfg.get("surface_checkpoint"),
+            edge_checkpoint=brep_cfg.get("edge_checkpoint"),
+            freeze=brep_cfg.get("freeze", False),
         )
 
         # Point cloud encoder
@@ -173,15 +183,9 @@ class CLIP4CAD_H(nn.Module):
             Dictionary with embeddings
         """
         # Encode with B-Rep encoder
-        if self.brep_encoder.face_encoder.training:
-            face_tokens, edge_tokens = self.brep_encoder(
-                face_grids, edge_curves, face_mask, edge_mask
-            )
-        else:
-            with torch.no_grad():
-                face_tokens, edge_tokens = self.brep_encoder(
-                    face_grids, edge_curves, face_mask, edge_mask
-                )
+        face_tokens, edge_tokens = self.brep_encoder(
+            face_grids, edge_curves, face_mask, edge_mask
+        )
 
         # Project to unified space
         tokens, mask = self.projection.project_brep(
