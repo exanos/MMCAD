@@ -1,0 +1,94 @@
+# CLIP4CAD-H Model Configuration
+
+# Unified embedding dimensions
+d_unified: 256
+d_proj: 128
+
+# Hierarchical compression settings
+compression:
+  n_global_queries: 8
+  n_detail_queries: 8
+  k_detail_select: 64
+  n_heads: 8
+  n_layers: 2
+  dropout: 0.1
+
+# Encoder configurations
+encoders:
+  # B-Rep encoder (AutoBrep-style FSQ VAE)
+  # Reference: https://github.com/AutodeskAILab/AutoBrep
+  brep:
+    # Output dimensions (matching AutoBrep XAEncoder)
+    face_dim: 48  # 3 * 16 (surfZ dimension)
+    edge_dim: 12  # 3 * 4 (edgeZ dimension)
+
+    # Input sizes
+    face_grid_size: 32  # 32x32 UV grid
+    edge_curve_size: 32  # 32 points per edge
+
+    # Architecture (matching AutoBrep defaults)
+    face_base_channels: 64
+    face_channel_mult: [1, 2, 4, 8]
+    face_latent_channels: 16
+    edge_base_channels: 64
+    edge_channel_mult: [1, 2, 4]
+    edge_latent_channels: 4
+
+    # FSQ settings (AutoBrep uses levels [8,5,5,5] = 1000 codebook)
+    fsq_levels: [8, 5, 5, 5]
+    use_fsq: false  # We use continuous features for contrastive learning
+
+    # Pretrained weights from HuggingFace: SamGiantEagle/AutoBrep
+    # Run: python scripts/download_autobrep_weights.py
+    surface_checkpoint: null  # e.g., pretrained/autobrep/surface_fsq_vae.pt
+    edge_checkpoint: null     # e.g., pretrained/autobrep/edge_fsq_vae.pt
+    freeze: false  # Fine-tune for contrastive learning
+    # Pre-computed features (optional, for frozen encoder)
+    # Run: python scripts/precompute_brep_features.py --data-root data/mmcad
+    use_cached_features: false  # Set to true to use pre-computed features
+
+  # Point cloud encoder (ULIP-2 Point-BERT)
+  # Reference: https://github.com/salesforce/ULIP
+  # Weights: https://huggingface.co/datasets/SFXX/ulip
+  pointcloud:
+    model: ulip2-pointbert
+    checkpoint: null  # Path to ULIP-2 pretrained weights (auto-download if null)
+    # Run: python scripts/precompute_pointcloud_features.py --download-weights
+
+    # Input settings
+    num_points: 10000     # 10K points per sample
+    in_channels: 6        # xyz + normals
+
+    # ULIP-2 Point-BERT architecture
+    output_dim: 768       # ULIP-2 uses 768 (not 384)
+    num_tokens: 513       # 512 groups + 1 CLS
+    num_groups: 512
+    group_size: 32
+    num_layers: 12
+    num_heads: 12         # ULIP-2 uses 12 heads (not 6)
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    drop_path_rate: 0.1
+
+    freeze: true  # Freeze encoder, use pre-computed features
+    # Pre-computed features (recommended for training)
+    # Run: python scripts/precompute_pointcloud_features.py --data-root data/mmcad
+    use_cached_features: false  # Set to true to use pre-computed features
+
+  # Text encoder (LLM)
+  # Recommended: microsoft/Phi-4-mini-instruct (3072 hidden dim)
+  # Alternatives: Qwen/Qwen2.5-3B-Instruct (2048), microsoft/phi-2 (2560)
+  text:
+    model_name: microsoft/Phi-4-mini-instruct
+    hidden_dim: 3072  # Phi-4-mini: 3072, Qwen2.5-3B: 2048, phi-2: 2560
+    freeze: true
+    use_fp16: true
+    # Pre-computed embeddings (recommended for training)
+    # Run: python scripts/precompute_text_embeddings.py --data-root data/mmcad
+    use_cached_embeddings: false  # Set to true to use pre-computed embeddings
+
+# Reconstruction decoder (auxiliary regularization)
+reconstruction:
+  enabled: true
+  max_faces: 64
+  max_edges: 128

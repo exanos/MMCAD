@@ -1,0 +1,45 @@
+# MM-CAD Dataset Configuration
+
+dataset: mm_cad
+data_root: data/mm_cad
+
+# Point cloud settings (ULIP-2 compatible)
+num_points: 10000         # 10K points for ULIP-2 Point-BERT
+point_channels: 6         # xyz + normals from PLY files
+
+# B-Rep settings
+max_faces: 64
+max_edges: 128
+face_grid_size: 32
+edge_curve_size: 32
+
+# Text settings
+max_title_len: 64
+max_desc_len: 256
+
+# Pre-computed embeddings/features directory
+embeddings_dir: null  # Defaults to {data_root}/embeddings
+
+# Pre-computed text embeddings (recommended for training)
+# Run: python scripts/precompute_text_embeddings.py --data-root data/mm_cad
+use_cached_text_embeddings: false
+
+# Pre-computed point cloud features (recommended for training)
+# Run: python scripts/precompute_pointcloud_features.py --data-root data/mm_cad
+use_cached_pc_features: false
+
+# Pre-computed B-Rep features (optional, for frozen encoder)
+# Run: python scripts/precompute_brep_features.py --data-root data/mm_cad
+use_cached_brep_features: false
+
+# Augmentation
+rotation_augment: true
+discrete_rotations: true  # 90-degree increments
+point_jitter: 0.01
+random_scale: [0.8, 1.2]
+
+# DataLoader
+batch_size: 32
+num_workers: 4
+pin_memory: true
+drop_last: true

@@ -1,0 +1,19 @@
+# CLIP4CAD-H Default Configuration
+# Unified Multimodal Encoder for CAD Models
+
+defaults:
+  - model: clip4cad_h
+  - data: mm_cad
+  - training: stage1
+  - _self_
+
+experiment:
+  name: clip4cad_h
+  seed: 42
+  output_dir: outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+logging:
+  use_wandb: true
+  wandb_project: clip4cad-h
+  log_every: 100
+  use_tensorboard: false
