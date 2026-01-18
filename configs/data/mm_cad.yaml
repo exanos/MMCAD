@@ -1,0 +1,29 @@
+# MM-CAD Dataset Configuration
+
+dataset: mm_cad
+data_root: data/mm_cad
+
+# Point cloud settings
+num_points: 2048
+
+# B-Rep settings
+max_faces: 64
+max_edges: 128
+face_grid_size: 32
+edge_curve_size: 32
+
+# Text settings
+max_title_len: 64
+max_desc_len: 512
+
+# Augmentation
+rotation_augment: true
+discrete_rotations: true  # 90-degree increments
+point_jitter: 0.01
+random_scale: [0.8, 1.2]
+
+# DataLoader
+batch_size: 32
+num_workers: 4
+pin_memory: true
+drop_last: true

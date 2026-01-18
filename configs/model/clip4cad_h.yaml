@@ -1,0 +1,50 @@
+# CLIP4CAD-H Model Configuration
+
+# Unified embedding dimensions
+d_unified: 256
+d_proj: 128
+
+# Hierarchical compression settings
+compression:
+  n_global_queries: 8
+  n_detail_queries: 8
+  k_detail_select: 64
+  n_heads: 8
+  n_layers: 2
+  dropout: 0.1
+
+# Encoder configurations
+encoders:
+  # B-Rep encoder (AutoBrep-style)
+  brep:
+    face_dim: 32
+    edge_dim: 16
+    face_grid_size: 32  # 32x32 UV grid
+    edge_curve_size: 32  # 32 points per edge
+    checkpoint: null  # Path to pretrained AutoBrep weights
+    freeze: true
+
+  # Point cloud encoder (Point-BERT)
+  pointcloud:
+    model: pointbert
+    checkpoint: null  # Path to ULIP-2 pretrained weights
+    output_dim: 384
+    num_tokens: 513  # 512 groups + 1 CLS
+    num_groups: 512
+    group_size: 32
+    num_layers: 12
+    num_heads: 6
+    freeze: true
+
+  # Text encoder (LLM)
+  text:
+    model_name: microsoft/phi-2  # Or Qwen/Qwen2.5-3B-Instruct
+    hidden_dim: 2560  # phi-2: 2560, Qwen2.5-3B: 2048
+    freeze: true
+    use_fp16: true
+
+# Reconstruction decoder (auxiliary regularization)
+reconstruction:
+  enabled: true
+  max_faces: 64
+  max_edges: 128
