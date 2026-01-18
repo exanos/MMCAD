@@ -28,6 +28,10 @@ use_cached_text_embeddings: false
 # Run: python scripts/precompute_pointcloud_features.py --data-root data/mm_cad
 use_cached_pc_features: false
 
+# Pre-computed B-Rep features (optional, for frozen encoder)
+# Run: python scripts/precompute_brep_features.py --data-root data/mm_cad
+use_cached_brep_features: false
+
 # Augmentation
 rotation_augment: true
 discrete_rotations: true  # 90-degree increments

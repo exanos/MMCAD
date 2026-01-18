@@ -19,7 +19,10 @@ Expected data organization:
     │   ├── test_text_embeddings.h5
     │   ├── train_pointcloud_features.h5  # Pre-computed PC features
     │   ├── val_pointcloud_features.h5
-    │   └── test_pointcloud_features.h5
+    │   ├── test_pointcloud_features.h5
+    │   ├── train_brep_features.h5        # Pre-computed B-Rep features
+    │   ├── val_brep_features.h5
+    │   └── test_brep_features.h5
     └── splits/
         ├── train.txt
         ├── val.txt
@@ -273,6 +276,88 @@ class PointCloudFeatureCache:
         self.close()
 
 
+class BRepFeatureCache:
+    """
+    Manages pre-computed B-Rep features stored in HDF5 files.
+
+    Stores AutoBrep encoder outputs (face and edge latents) to
+    avoid re-encoding during training when encoder is frozen.
+    """
+
+    def __init__(self, hdf5_path: str):
+        import h5py
+
+        self.hdf5_path = Path(hdf5_path)
+        if not self.hdf5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
+
+        # Open file and build index
+        self.file = h5py.File(hdf5_path, "r")
+
+        # Build sample_id -> index mapping
+        sample_ids = self.file["sample_ids"][:]
+        self.id_to_idx = {
+            (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+            for i, sid in enumerate(sample_ids)
+        }
+
+        # Store metadata
+        self.face_dim = self.file.attrs.get("face_dim", 48)
+        self.edge_dim = self.file.attrs.get("edge_dim", 12)
+        self.max_faces = self.file.attrs.get("max_faces", 64)
+        self.max_edges = self.file.attrs.get("max_edges", 128)
+        self.model_config = self.file.attrs.get("model_config", "autobrep")
+
+        print(f"Loaded B-Rep feature cache: {hdf5_path}")
+        print(f"  - {len(self.id_to_idx)} samples")
+        print(f"  - face_dim: {self.face_dim}, edge_dim: {self.edge_dim}")
+        print(f"  - max_faces: {self.max_faces}, max_edges: {self.max_edges}")
+        print(f"  - model: {self.model_config}")
+
+    def __len__(self):
+        return len(self.id_to_idx)
+
+    def __contains__(self, sample_id: str):
+        return sample_id in self.id_to_idx
+
+    def get(self, sample_id: str) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Get features for a sample.
+
+        Returns:
+            Dictionary with:
+                - face_features: [max_faces, face_dim] - face latents
+                - edge_features: [max_edges, edge_dim] - edge latents
+                - face_mask: [max_faces] - valid face mask
+                - edge_mask: [max_edges] - valid edge mask
+                - adjacency: [max_faces, max_edges] - face-edge adjacency
+                - num_faces: int - actual number of faces
+                - num_edges: int - actual number of edges
+        """
+        if sample_id not in self.id_to_idx:
+            return None
+
+        idx = self.id_to_idx[sample_id]
+
+        return {
+            "face_features": self.file["face_features"][idx],
+            "edge_features": self.file["edge_features"][idx],
+            "face_mask": self.file["face_masks"][idx],
+            "edge_mask": self.file["edge_masks"][idx],
+            "adjacency": self.file["adjacency"][idx],
+            "num_faces": int(self.file["num_faces"][idx]),
+            "num_edges": int(self.file["num_edges"][idx]),
+        }
+
+    def close(self):
+        """Close the HDF5 file."""
+        if hasattr(self, "file") and self.file:
+            self.file.close()
+
+    def __del__(self):
+        self.close()
+
+
 class MMCADDataset(Dataset):
     """
     Multimodal CAD dataset with B-Rep, point cloud, and hierarchical text.
@@ -281,7 +366,7 @@ class MMCADDataset(Dataset):
     - Variable numbers of faces/edges with padding and masking
     - Missing modalities (not all samples have all modalities)
     - Consistent rotation augmentation across modalities
-    - Pre-computed text embeddings (optional, for faster training)
+    - Pre-computed embeddings/features (optional, for faster training)
     """
 
     def __init__(
@@ -299,10 +384,11 @@ class MMCADDataset(Dataset):
         max_desc_len: int = 256,
         rotation_augment: bool = False,
         point_jitter: float = 0.0,
-        # Pre-computed embeddings
+        # Pre-computed embeddings/features
         embeddings_dir: Optional[str] = None,
         use_cached_text_embeddings: bool = False,
         use_cached_pc_features: bool = False,
+        use_cached_brep_features: bool = False,
     ):
         """
         Args:
@@ -322,6 +408,7 @@ class MMCADDataset(Dataset):
             embeddings_dir: Directory containing pre-computed embeddings
             use_cached_text_embeddings: Whether to use pre-computed text embeddings
             use_cached_pc_features: Whether to use pre-computed point cloud features
+            use_cached_brep_features: Whether to use pre-computed B-Rep features
         """
         self.data_root = Path(data_root)
         self.split = split
@@ -338,6 +425,7 @@ class MMCADDataset(Dataset):
         self.point_jitter = point_jitter if split == "train" else 0.0
         self.use_cached_text_embeddings = use_cached_text_embeddings
         self.use_cached_pc_features = use_cached_pc_features
+        self.use_cached_brep_features = use_cached_brep_features
 
         # Load split
         split_file = self.data_root / "splits" / f"{split}.txt"
@@ -376,6 +464,17 @@ class MMCADDataset(Dataset):
                 print("Falling back to loading raw point clouds")
                 self.use_cached_pc_features = False
 
+        # Load B-Rep feature cache if requested
+        self.brep_cache = None
+        if use_cached_brep_features:
+            brep_cache_file = embeddings_dir / f"{split}_brep_features.h5"
+            if brep_cache_file.exists():
+                self.brep_cache = BRepFeatureCache(str(brep_cache_file))
+            else:
+                print(f"Warning: B-Rep feature cache not found: {brep_cache_file}")
+                print("Falling back to loading raw B-Rep data")
+                self.use_cached_brep_features = False
+
         # Load text data (for fallback or if not using cache)
         if not self.use_cached_text_embeddings or self.text_cache is None:
             titles_file = self.data_root / "text" / "titles.json"
@@ -408,6 +507,8 @@ class MMCADDataset(Dataset):
             print(f"Using pre-computed text embeddings")
         if self.use_cached_pc_features and self.pc_cache:
             print(f"Using pre-computed point cloud features")
+        if self.use_cached_brep_features and self.brep_cache:
+            print(f"Using pre-computed B-Rep features")
 
     def _discover_samples(self) -> List[str]:
         """Discover sample IDs from available data."""
@@ -445,13 +546,22 @@ class MMCADDataset(Dataset):
             rotation_matrix = sample_discrete_rotation_matrix()
 
         # Load B-Rep (if available)
-        brep_data = self._load_brep(sample_id, rotation_matrix)
-        if brep_data is not None:
-            output.update(brep_data)
-            output["has_brep"] = True
+        if self.use_cached_brep_features and self.brep_cache:
+            brep_data = self._load_cached_brep_features(sample_id)
+            if brep_data is not None:
+                output.update(brep_data)
+                output["has_brep"] = True
+            else:
+                output["has_brep"] = False
+                output.update(self._get_empty_brep_features())
         else:
-            output["has_brep"] = False
-            output.update(self._get_empty_brep())
+            brep_data = self._load_brep(sample_id, rotation_matrix)
+            if brep_data is not None:
+                output.update(brep_data)
+                output["has_brep"] = True
+            else:
+                output["has_brep"] = False
+                output.update(self._get_empty_brep())
 
         # Load point cloud (if available)
         if self.use_cached_pc_features and self.pc_cache:
@@ -658,6 +768,41 @@ class MMCADDataset(Dataset):
 
         return {"points": points_out}
 
+    def _load_cached_brep_features(self, sample_id: str) -> Optional[Dict[str, torch.Tensor]]:
+        """Load pre-computed B-Rep features."""
+        cached = self.brep_cache.get(sample_id)
+
+        if cached is None:
+            return None
+
+        return {
+            "brep_face_features": torch.from_numpy(cached["face_features"].astype(np.float32)),
+            "brep_edge_features": torch.from_numpy(cached["edge_features"].astype(np.float32)),
+            "brep_face_mask": torch.from_numpy(cached["face_mask"].astype(np.float32)),
+            "brep_edge_mask": torch.from_numpy(cached["edge_mask"].astype(np.float32)),
+            "brep_adjacency": torch.from_numpy(cached["adjacency"].astype(np.float32)),
+            "brep_num_faces": cached["num_faces"],
+            "brep_num_edges": cached["num_edges"],
+            "use_cached_brep_features": True,
+        }
+
+    def _get_empty_brep_features(self) -> Dict[str, torch.Tensor]:
+        """Return empty B-Rep features for missing data."""
+        face_dim = self.brep_cache.face_dim if self.brep_cache else 48
+        edge_dim = self.brep_cache.edge_dim if self.brep_cache else 12
+        max_faces = self.brep_cache.max_faces if self.brep_cache else self.max_faces
+        max_edges = self.brep_cache.max_edges if self.brep_cache else self.max_edges
+        return {
+            "brep_face_features": torch.zeros(max_faces, face_dim),
+            "brep_edge_features": torch.zeros(max_edges, edge_dim),
+            "brep_face_mask": torch.zeros(max_faces),
+            "brep_edge_mask": torch.zeros(max_edges),
+            "brep_adjacency": torch.zeros(max_faces, max_edges),
+            "brep_num_faces": 0,
+            "brep_num_edges": 0,
+            "use_cached_brep_features": True,
+        }
+
     def _load_cached_pc_features(self, sample_id: str) -> Optional[Dict[str, torch.Tensor]]:
         """Load pre-computed point cloud features."""
         cached = self.pc_cache.get(sample_id)
@@ -758,25 +903,40 @@ def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     has_text = [s["has_text"] for s in batch]
     use_cached_text = [s.get("use_cached_embeddings", False) for s in batch]
     use_cached_pc = [s.get("use_cached_pc_features", False) for s in batch]
+    use_cached_brep = [s.get("use_cached_brep_features", False) for s in batch]
 
     collated["has_brep"] = torch.tensor(has_brep)
     collated["has_pointcloud"] = torch.tensor(has_pc)
     collated["has_text"] = torch.tensor(has_text)
     collated["use_cached_embeddings"] = all(use_cached_text)
     collated["use_cached_pc_features"] = all(use_cached_pc)
+    collated["use_cached_brep_features"] = all(use_cached_brep)
 
-    # B-Rep tensor keys
-    brep_keys = [
-        "brep_faces",
-        "brep_edges",
-        "brep_face_mask",
-        "brep_edge_mask",
-        "brep_adjacency",
-    ]
-
-    for key in brep_keys:
-        if key in batch[0]:
-            collated[key] = torch.stack([s[key] for s in batch])
+    # B-Rep keys - either raw geometry or cached features
+    if collated["use_cached_brep_features"]:
+        # Stack cached features
+        brep_feature_keys = [
+            "brep_face_features",
+            "brep_edge_features",
+            "brep_face_mask",
+            "brep_edge_mask",
+            "brep_adjacency",
+        ]
+        for key in brep_feature_keys:
+            if key in batch[0]:
+                collated[key] = torch.stack([s[key] for s in batch])
+    else:
+        # Stack raw B-Rep geometry
+        brep_keys = [
+            "brep_faces",
+            "brep_edges",
+            "brep_face_mask",
+            "brep_edge_mask",
+            "brep_adjacency",
+        ]
+        for key in brep_keys:
+            if key in batch[0]:
+                collated[key] = torch.stack([s[key] for s in batch])
 
     # Point cloud keys - either raw points or cached features
     if collated["use_cached_pc_features"]:

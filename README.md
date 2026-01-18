@@ -143,7 +143,8 @@ MMCAD/
 │   ├── extract_features.py
 │   ├── download_autobrep_weights.py
 │   ├── precompute_text_embeddings.py      # Pre-compute LLM embeddings
-│   └── precompute_pointcloud_features.py  # Pre-compute Point-BERT features
+│   ├── precompute_pointcloud_features.py  # Pre-compute Point-BERT features
+│   └── precompute_brep_features.py        # Pre-compute AutoBrep features
 └── pretrained/
     ├── autobrep/                    # AutoBrep FSQ VAE weights
     └── pointbert/                   # ULIP-2 Point-BERT weights
@@ -168,7 +169,9 @@ data/mmcad/
 │   ├── train_text_embeddings.h5
 │   ├── val_text_embeddings.h5
 │   ├── train_pointcloud_features.h5
-│   └── val_pointcloud_features.h5
+│   ├── val_pointcloud_features.h5
+│   ├── train_brep_features.h5
+│   └── val_brep_features.h5
 └── splits/
     ├── train.txt
     ├── val.txt
@@ -239,6 +242,29 @@ Then enable cached features in your training config:
 python scripts/train.py data.use_cached_pc_features=true
 ```
 
+### Pre-compute B-Rep Features (Optional)
+
+If freezing the B-Rep encoder, you can pre-compute features to speed up training.
+
+```bash
+# Pre-compute features using AutoBrep encoder
+python scripts/precompute_brep_features.py \
+    --data-root data/mmcad \
+    --surface-checkpoint pretrained/autobrep/surface_fsq_vae.pt \
+    --edge-checkpoint pretrained/autobrep/edge_fsq_vae.pt \
+    --batch-size 64
+
+# This creates HDF5 files in data/mmcad/embeddings/
+#   - train_brep_features.h5
+#   - val_brep_features.h5
+#   - test_brep_features.h5
+```
+
+Then enable cached features in your training config:
+```bash
+python scripts/train.py data.use_cached_brep_features=true
+```
+
 ### Two-Stage Training
 
 CLIP4CAD-H uses two-stage training:
@@ -253,10 +279,11 @@ python scripts/download_autobrep_weights.py
 # Default training (with live LLM inference)
 python scripts/train.py
 
-# Training with pre-computed embeddings (recommended)
+# Training with pre-computed embeddings (recommended for frozen encoders)
 python scripts/train.py \
     data.use_cached_text_embeddings=true \
-    data.use_cached_pc_features=true
+    data.use_cached_pc_features=true \
+    data.use_cached_brep_features=true  # optional, only if B-Rep encoder is frozen
 
 # With pretrained AutoBrep weights
 python scripts/train.py \

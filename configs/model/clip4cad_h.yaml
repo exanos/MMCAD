@@ -43,6 +43,9 @@ encoders:
     surface_checkpoint: null  # e.g., pretrained/autobrep/surface_fsq_vae.pt
     edge_checkpoint: null     # e.g., pretrained/autobrep/edge_fsq_vae.pt
     freeze: false  # Fine-tune for contrastive learning
+    # Pre-computed features (optional, for frozen encoder)
+    # Run: python scripts/precompute_brep_features.py --data-root data/mmcad
+    use_cached_features: false  # Set to true to use pre-computed features
 
   # Point cloud encoder (ULIP-2 Point-BERT)
   # Reference: https://github.com/salesforce/ULIP
