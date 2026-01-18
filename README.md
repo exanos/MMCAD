@@ -143,6 +143,28 @@ data/mmcad/
 
 ## Training
 
+### Pre-compute Text Embeddings (Recommended)
+
+Since the text encoder (LLM) is frozen during training, you can pre-compute text embeddings once and reuse them. This significantly speeds up training and reduces GPU memory usage.
+
+```bash
+# Pre-compute embeddings using Phi-4-mini
+python scripts/precompute_text_embeddings.py \
+    --data-root data/mmcad \
+    --model microsoft/Phi-4-mini-instruct \
+    --batch-size 8
+
+# This creates HDF5 files in data/mmcad/embeddings/
+#   - train_text_embeddings.h5
+#   - val_text_embeddings.h5
+#   - test_text_embeddings.h5
+```
+
+Then enable cached embeddings in your training config:
+```bash
+python scripts/train.py data.use_cached_text_embeddings=true
+```
+
 ### Two-Stage Training
 
 CLIP4CAD-H uses two-stage training:
@@ -154,8 +176,11 @@ CLIP4CAD-H uses two-stage training:
 # Download pretrained weights first
 python scripts/download_autobrep_weights.py
 
-# Default training
+# Default training (with live LLM inference)
 python scripts/train.py
+
+# Training with pre-computed text embeddings (recommended)
+python scripts/train.py data.use_cached_text_embeddings=true
 
 # With pretrained AutoBrep weights
 python scripts/train.py \

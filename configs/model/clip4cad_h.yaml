@@ -57,12 +57,16 @@ encoders:
     freeze: true
 
   # Text encoder (LLM)
-  # Options: Qwen/Qwen2.5-3B-Instruct, microsoft/phi-2, Qwen/Qwen3-4B
+  # Recommended: microsoft/Phi-4-mini-instruct (3072 hidden dim)
+  # Alternatives: Qwen/Qwen2.5-3B-Instruct (2048), microsoft/phi-2 (2560)
   text:
-    model_name: Qwen/Qwen2.5-3B-Instruct
-    hidden_dim: 3072  # Qwen2.5-3B: 3072, phi-2: 2560
+    model_name: microsoft/Phi-4-mini-instruct
+    hidden_dim: 3072  # Phi-4-mini: 3072, Qwen2.5-3B: 2048, phi-2: 2560
     freeze: true
     use_fp16: true
+    # Pre-computed embeddings (recommended for training)
+    # Run: python scripts/precompute_text_embeddings.py --data-root data/mmcad
+    use_cached_embeddings: false  # Set to true to use pre-computed embeddings
 
 # Reconstruction decoder (auxiliary regularization)
 reconstruction:

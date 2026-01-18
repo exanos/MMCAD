@@ -247,28 +247,40 @@ class CLIP4CAD_H(nn.Module):
 
     def encode_text(
         self,
-        title_input_ids: torch.Tensor,
-        title_attention_mask: torch.Tensor,
-        desc_input_ids: torch.Tensor,
-        desc_attention_mask: torch.Tensor,
+        title_input_ids: Optional[torch.Tensor] = None,
+        title_attention_mask: Optional[torch.Tensor] = None,
+        desc_input_ids: Optional[torch.Tensor] = None,
+        desc_attention_mask: Optional[torch.Tensor] = None,
+        # Cached embeddings (alternative to input_ids)
+        title_embedding: Optional[torch.Tensor] = None,
+        desc_embedding: Optional[torch.Tensor] = None,
+        desc_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Encode hierarchical text.
 
+        Supports both live inference and cached embeddings.
+
         Args:
-            title_input_ids: [B, L_title]
-            title_attention_mask: [B, L_title]
-            desc_input_ids: [B, L_desc]
-            desc_attention_mask: [B, L_desc]
+            title_input_ids: [B, L_title] (for live inference)
+            title_attention_mask: [B, L_title] (for live inference)
+            desc_input_ids: [B, L_desc] (for live inference)
+            desc_attention_mask: [B, L_desc] (for live inference)
+            title_embedding: [B, d_llm] (for cached mode)
+            desc_embedding: [B, L_desc, d_llm] (for cached mode)
+            desc_mask: [B, L_desc] (for cached mode)
 
         Returns:
             Dictionary with embeddings
         """
         text_out = self.text_encoder(
-            title_input_ids,
-            title_attention_mask,
-            desc_input_ids,
-            desc_attention_mask,
+            title_input_ids=title_input_ids,
+            title_attention_mask=title_attention_mask,
+            desc_input_ids=desc_input_ids,
+            desc_attention_mask=desc_attention_mask,
+            title_embedding=title_embedding,
+            desc_embedding=desc_embedding,
+            desc_mask=desc_mask,
         )
 
         # Project for contrastive
@@ -329,15 +341,26 @@ class CLIP4CAD_H(nn.Module):
             outputs["pointcloud"] = pc_out
 
         # ============================================================
-        # Encode Text
+        # Encode Text (supports both cached embeddings and live inference)
         # ============================================================
 
-        text_out = self.encode_text(
-            batch["title_input_ids"].to(device),
-            batch["title_attention_mask"].to(device),
-            batch["desc_input_ids"].to(device),
-            batch["desc_attention_mask"].to(device),
-        )
+        use_cached = batch.get("use_cached_embeddings", False)
+
+        if use_cached:
+            # Use pre-computed embeddings
+            text_out = self.encode_text(
+                title_embedding=batch["title_embedding"].to(device),
+                desc_embedding=batch["desc_embedding"].to(device),
+                desc_mask=batch["desc_mask"].to(device),
+            )
+        else:
+            # Use live LLM inference
+            text_out = self.encode_text(
+                title_input_ids=batch["title_input_ids"].to(device),
+                title_attention_mask=batch["title_attention_mask"].to(device),
+                desc_input_ids=batch["desc_input_ids"].to(device),
+                desc_attention_mask=batch["desc_attention_mask"].to(device),
+            )
         outputs["text"] = text_out
 
         # ============================================================

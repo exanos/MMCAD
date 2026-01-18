@@ -14,7 +14,12 @@ edge_curve_size: 32
 
 # Text settings
 max_title_len: 64
-max_desc_len: 512
+max_desc_len: 256
+
+# Pre-computed text embeddings (recommended for training)
+# Run: python scripts/precompute_text_embeddings.py --data-root data/mm_cad
+use_cached_text_embeddings: false
+text_embeddings_dir: null  # Defaults to {data_root}/embeddings
 
 # Augmentation
 rotation_augment: true

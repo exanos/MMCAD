@@ -12,6 +12,10 @@ Expected data organization:
     ├── text/
     │   ├── titles.json         # {id: "title"}
     │   └── descriptions.json   # {id: "description"}
+    ├── embeddings/             # Pre-computed text embeddings (optional)
+    │   ├── train_text_embeddings.h5
+    │   ├── val_text_embeddings.h5
+    │   └── test_text_embeddings.h5
     └── splits/
         ├── train.txt
         ├── val.txt
@@ -36,6 +40,78 @@ from .augmentation import (
 )
 
 
+class TextEmbeddingCache:
+    """
+    Manages pre-computed text embeddings stored in HDF5 files.
+
+    Provides efficient random access to embeddings without loading
+    the entire file into memory.
+    """
+
+    def __init__(self, hdf5_path: str):
+        import h5py
+
+        self.hdf5_path = Path(hdf5_path)
+        if not self.hdf5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
+
+        # Open file and build index
+        self.file = h5py.File(hdf5_path, "r")
+
+        # Build sample_id -> index mapping
+        sample_ids = self.file["sample_ids"][:]
+        self.id_to_idx = {
+            (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+            for i, sid in enumerate(sample_ids)
+        }
+
+        # Store metadata
+        self.d_llm = self.file.attrs.get("d_llm", 3072)
+        self.max_desc_len = self.file.attrs.get("max_desc_len", 256)
+        self.model_name = self.file.attrs.get("model_name", "unknown")
+
+        print(f"Loaded text embedding cache: {hdf5_path}")
+        print(f"  - {len(self.id_to_idx)} samples")
+        print(f"  - d_llm: {self.d_llm}")
+        print(f"  - max_desc_len: {self.max_desc_len}")
+        print(f"  - model: {self.model_name}")
+
+    def __len__(self):
+        return len(self.id_to_idx)
+
+    def __contains__(self, sample_id: str):
+        return sample_id in self.id_to_idx
+
+    def get(self, sample_id: str) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Get embeddings for a sample.
+
+        Returns:
+            Dictionary with:
+                - title_embedding: [d_llm]
+                - desc_embedding: [max_desc_len, d_llm]
+                - desc_mask: [max_desc_len]
+        """
+        if sample_id not in self.id_to_idx:
+            return None
+
+        idx = self.id_to_idx[sample_id]
+
+        return {
+            "title_embedding": self.file["title_embeddings"][idx],
+            "desc_embedding": self.file["desc_embeddings"][idx],
+            "desc_mask": self.file["desc_masks"][idx],
+        }
+
+    def close(self):
+        """Close the HDF5 file."""
+        if hasattr(self, "file") and self.file:
+            self.file.close()
+
+    def __del__(self):
+        self.close()
+
+
 class MMCADDataset(Dataset):
     """
     Multimodal CAD dataset with B-Rep, point cloud, and hierarchical text.
@@ -44,28 +120,32 @@ class MMCADDataset(Dataset):
     - Variable numbers of faces/edges with padding and masking
     - Missing modalities (not all samples have all modalities)
     - Consistent rotation augmentation across modalities
+    - Pre-computed text embeddings (optional, for faster training)
     """
 
     def __init__(
         self,
         data_root: str,
         split: str,
-        tokenizer: Any,
+        tokenizer: Optional[Any] = None,
         max_faces: int = 64,
         max_edges: int = 128,
         num_points: int = 2048,
         face_grid_size: int = 32,
         edge_curve_size: int = 32,
         max_title_len: int = 64,
-        max_desc_len: int = 512,
+        max_desc_len: int = 256,
         rotation_augment: bool = False,
         point_jitter: float = 0.0,
+        # Pre-computed embeddings
+        text_embeddings_dir: Optional[str] = None,
+        use_cached_text_embeddings: bool = False,
     ):
         """
         Args:
             data_root: Root directory of dataset
             split: 'train', 'val', or 'test'
-            tokenizer: HuggingFace tokenizer for text
+            tokenizer: HuggingFace tokenizer for text (not needed if using cached)
             max_faces: Maximum number of faces to load
             max_edges: Maximum number of edges to load
             num_points: Number of points in point cloud
@@ -75,6 +155,8 @@ class MMCADDataset(Dataset):
             max_desc_len: Maximum description token length
             rotation_augment: Whether to apply rotation augmentation
             point_jitter: Standard deviation for point jitter
+            text_embeddings_dir: Directory containing pre-computed embeddings
+            use_cached_text_embeddings: Whether to use pre-computed embeddings
         """
         self.data_root = Path(data_root)
         self.split = split
@@ -88,6 +170,7 @@ class MMCADDataset(Dataset):
         self.max_desc_len = max_desc_len
         self.augment = rotation_augment and (split == "train")
         self.point_jitter = point_jitter if split == "train" else 0.0
+        self.use_cached_text_embeddings = use_cached_text_embeddings
 
         # Load split
         split_file = self.data_root / "splits" / f"{split}.txt"
@@ -98,22 +181,52 @@ class MMCADDataset(Dataset):
             # If no split file, try to find all samples
             self.sample_ids = self._discover_samples()
 
-        # Load text data
-        titles_file = self.data_root / "text" / "titles.json"
-        descriptions_file = self.data_root / "text" / "descriptions.json"
+        # Load text embedding cache if requested
+        self.text_cache = None
+        if use_cached_text_embeddings:
+            if text_embeddings_dir is None:
+                text_embeddings_dir = self.data_root / "embeddings"
+            else:
+                text_embeddings_dir = Path(text_embeddings_dir)
 
-        self.titles = {}
-        self.descriptions = {}
+            cache_file = text_embeddings_dir / f"{split}_text_embeddings.h5"
+            if cache_file.exists():
+                self.text_cache = TextEmbeddingCache(str(cache_file))
+            else:
+                print(f"Warning: Text embedding cache not found: {cache_file}")
+                print("Falling back to tokenization (requires tokenizer)")
+                self.use_cached_text_embeddings = False
 
-        if titles_file.exists():
-            with open(titles_file, "r") as f:
-                self.titles = json.load(f)
+        # Load text data (for fallback or if not using cache)
+        if not self.use_cached_text_embeddings or self.text_cache is None:
+            titles_file = self.data_root / "text" / "titles.json"
+            descriptions_file = self.data_root / "text" / "descriptions.json"
 
-        if descriptions_file.exists():
-            with open(descriptions_file, "r") as f:
-                self.descriptions = json.load(f)
+            self.titles = {}
+            self.descriptions = {}
+
+            if titles_file.exists():
+                with open(titles_file, "r") as f:
+                    self.titles = json.load(f)
+
+            if descriptions_file.exists():
+                with open(descriptions_file, "r") as f:
+                    self.descriptions = json.load(f)
+
+            # Also try loading per-sample text files
+            text_dir = self.data_root / "text"
+            if text_dir.exists():
+                for sample_id in self.sample_ids:
+                    text_file = text_dir / f"{sample_id}.json"
+                    if text_file.exists() and sample_id not in self.titles:
+                        with open(text_file, "r") as f:
+                            data = json.load(f)
+                            self.titles[sample_id] = data.get("title", "")
+                            self.descriptions[sample_id] = data.get("description", "")
 
         print(f"Loaded {len(self.sample_ids)} samples for {split}")
+        if self.use_cached_text_embeddings and self.text_cache:
+            print(f"Using pre-computed text embeddings")
 
     def _discover_samples(self) -> List[str]:
         """Discover sample IDs from available data."""
@@ -164,8 +277,11 @@ class MMCADDataset(Dataset):
             output["has_pointcloud"] = False
             output.update(self._get_empty_pointcloud())
 
-        # Load and tokenize text
-        text_data = self._load_text(sample_id)
+        # Load text (cached or tokenized)
+        if self.use_cached_text_embeddings and self.text_cache:
+            text_data = self._load_cached_text(sample_id)
+        else:
+            text_data = self._load_text(sample_id)
         output.update(text_data)
         output["has_text"] = True
 
@@ -318,10 +434,35 @@ class MMCADDataset(Dataset):
 
         return {"points": positions}
 
+    def _load_cached_text(self, sample_id: str) -> Dict[str, torch.Tensor]:
+        """Load pre-computed text embeddings."""
+        cached = self.text_cache.get(sample_id)
+
+        if cached is None:
+            # Fallback to empty embeddings
+            d_llm = self.text_cache.d_llm if self.text_cache else 3072
+            max_len = self.text_cache.max_desc_len if self.text_cache else self.max_desc_len
+            return {
+                "title_embedding": torch.zeros(d_llm),
+                "desc_embedding": torch.zeros(max_len, d_llm),
+                "desc_mask": torch.zeros(max_len),
+                "use_cached_embeddings": True,
+            }
+
+        return {
+            "title_embedding": torch.from_numpy(cached["title_embedding"].astype(np.float32)),
+            "desc_embedding": torch.from_numpy(cached["desc_embedding"].astype(np.float32)),
+            "desc_mask": torch.from_numpy(cached["desc_mask"].astype(np.float32)),
+            "use_cached_embeddings": True,
+        }
+
     def _load_text(self, sample_id: str) -> Dict[str, torch.Tensor]:
         """Load and tokenize title and description."""
         title = self.titles.get(sample_id, "CAD model")
         description = self.descriptions.get(sample_id, "A CAD model.")
+
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer required when not using cached embeddings")
 
         # Tokenize title
         title_enc = self.tokenizer(
@@ -348,12 +489,13 @@ class MMCADDataset(Dataset):
             "desc_attention_mask": desc_enc["attention_mask"].squeeze(0),
             "title_text": title,
             "desc_text": description,
+            "use_cached_embeddings": False,
         }
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     """
-    Custom collate function handling missing modalities.
+    Custom collate function handling missing modalities and cached embeddings.
 
     Args:
         batch: List of sample dictionaries
@@ -367,28 +509,50 @@ def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
     has_brep = [s["has_brep"] for s in batch]
     has_pc = [s["has_pointcloud"] for s in batch]
     has_text = [s["has_text"] for s in batch]
+    use_cached = [s.get("use_cached_embeddings", False) for s in batch]
 
     collated["has_brep"] = torch.tensor(has_brep)
     collated["has_pointcloud"] = torch.tensor(has_pc)
     collated["has_text"] = torch.tensor(has_text)
+    collated["use_cached_embeddings"] = all(use_cached)
 
-    # Tensor keys to stack
-    tensor_keys = [
+    # Geometry tensor keys
+    geometry_keys = [
         "brep_faces",
         "brep_edges",
         "brep_face_mask",
         "brep_edge_mask",
         "brep_adjacency",
         "points",
-        "title_input_ids",
-        "title_attention_mask",
-        "desc_input_ids",
-        "desc_attention_mask",
     ]
 
-    for key in tensor_keys:
+    for key in geometry_keys:
         if key in batch[0]:
             collated[key] = torch.stack([s[key] for s in batch])
+
+    # Text keys - depends on whether using cached embeddings
+    if collated["use_cached_embeddings"]:
+        # Stack cached embeddings
+        collated["title_embedding"] = torch.stack([s["title_embedding"] for s in batch])
+        collated["desc_embedding"] = torch.stack([s["desc_embedding"] for s in batch])
+        collated["desc_mask"] = torch.stack([s["desc_mask"] for s in batch])
+    else:
+        # Stack tokenized inputs
+        text_keys = [
+            "title_input_ids",
+            "title_attention_mask",
+            "desc_input_ids",
+            "desc_attention_mask",
+        ]
+        for key in text_keys:
+            if key in batch[0]:
+                collated[key] = torch.stack([s[key] for s in batch])
+
+        # Keep string lists
+        if "title_text" in batch[0]:
+            collated["title_text"] = [s["title_text"] for s in batch]
+        if "desc_text" in batch[0]:
+            collated["desc_text"] = [s["desc_text"] for s in batch]
 
     # Integer keys
     int_keys = ["brep_num_faces", "brep_num_edges"]
@@ -396,10 +560,8 @@ def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
         if key in batch[0]:
             collated[key] = torch.tensor([s[key] for s in batch])
 
-    # Keep string lists
+    # Keep sample IDs
     collated["sample_id"] = [s["sample_id"] for s in batch]
-    collated["title_text"] = [s["title_text"] for s in batch]
-    collated["desc_text"] = [s["desc_text"] for s in batch]
 
     return collated
 
