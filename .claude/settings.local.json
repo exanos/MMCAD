@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda --version:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(conda run:*)"
+    ]
+  }
+}
