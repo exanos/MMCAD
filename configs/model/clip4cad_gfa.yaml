@@ -1,0 +1,178 @@
+# CLIP4CAD-GFA Model Configuration
+# Cross-Modal Representation Learning via Grounded Feature Alignment
+
+# ============================================================================
+# Core Dimensions
+# ============================================================================
+
+# Unified representation dimension (all modalities projected to this)
+d_unified: 256
+
+# Contrastive projection dimension (for InfoNCE losses)
+d_proj: 128
+
+# Grounding space dimension (for computing grounding matrices)
+d_ground: 128
+
+# Alignment space dimension (for cross-modal consistency)
+d_align: 128
+
+# ============================================================================
+# Grounding Architecture
+# ============================================================================
+
+# Number of feature slot queries (max distinct features to extract from text)
+num_feature_slots: 12
+
+# Attention configuration
+num_attention_heads: 10
+num_parser_layers: 2
+
+# Regularization
+dropout: 0.1
+
+# Sequence length limits
+max_brep_tokens: 192    # Max faces (64) + edges (128)
+max_text_tokens: 512    # Max description length
+
+# Confidence threshold for active feature slots
+confidence_threshold: 0.3
+
+# ============================================================================
+# Temperature Initialization
+# ============================================================================
+
+tau_contrastive_init: 0.07
+tau_ground_init: 0.1
+
+# ============================================================================
+# Encoder Configurations (Pre-computed Features)
+# ============================================================================
+
+encoders:
+  # B-Rep encoder (AutoBrep-style FSQ VAE)
+  # Features are pre-computed using scripts/precompute_brep_features.py
+  brep:
+    # Output dimensions (matching AutoBrep XAEncoder)
+    face_dim: 48  # 3 * 16 (surfZ dimension)
+    edge_dim: 12  # 3 * 4 (edgeZ dimension)
+
+    # Input sizes (for reference)
+    face_grid_size: 32  # 32x32 UV grid
+    edge_curve_size: 32  # 32 points per edge
+
+    # Limits
+    max_faces: 64
+    max_edges: 128
+
+    # Pretrained weights (for pre-computation)
+    surface_checkpoint: null  # pretrained/autobrep/surface_fsq_vae.pt
+    edge_checkpoint: null     # pretrained/autobrep/edge_fsq_vae.pt
+
+    # Pre-computed features are required for GFA training
+    use_cached_features: true
+
+  # Point cloud encoder (ULIP-2 Point-BERT)
+  # Features are pre-computed using scripts/precompute_pointcloud_features.py
+  pointcloud:
+    model: ulip2-pointbert
+    checkpoint: null  # Path to ULIP-2 pretrained weights
+
+    # Input settings
+    num_points: 10000     # 10K points per sample
+    in_channels: 6        # xyz + normals
+
+    # ULIP-2 Point-BERT output
+    output_dim: 768       # ULIP-2 uses 768 (not 384)
+    num_tokens: 513       # 512 groups + 1 CLS
+
+    # Pre-computed features are required for GFA training
+    use_cached_features: true
+
+  # Text encoder (LLM)
+  # Features are pre-computed using scripts/precompute_text_embeddings.py
+  text:
+    model_name: microsoft/Phi-4-mini-instruct
+    hidden_dim: 3072  # Phi-4-mini hidden dimension
+
+    # Max sequence lengths
+    max_title_len: 64
+    max_desc_len: 256
+
+    # Pre-computed embeddings are required for GFA training
+    use_cached_embeddings: true
+
+# ============================================================================
+# Rotation Augmentation
+# ============================================================================
+
+# Number of pre-computed rotations per sample
+# Set to 1 for no rotation augmentation (or use single-rotation cache)
+num_rotations: 8
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Two-stage training
+  num_epochs_stage1: 30   # Grounding establishment
+  num_epochs_stage2: 40   # Global alignment with hard negatives
+
+  # Optimization
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 0.05
+  warmup_epochs: 3
+  min_lr: 1.0e-6
+  max_grad_norm: 1.0
+
+  # Stage 2 learning rate reduction
+  stage2_lr_factor: 0.5
+
+  # Loss weights
+  lambda_global: 1.0        # Global contrastive loss
+  lambda_local: 0.5         # Local (per-slot) contrastive loss
+  lambda_consist: 0.5       # Grounding consistency loss
+  lambda_diverse: 0.2       # Grounding diversity loss
+  lambda_conf_reg: 0.1      # Confidence regularization
+
+  # Stage 1 uses reduced global loss weight
+  lambda_global_stage1: 0.2
+
+  # Hard negative mining (at stage transition)
+  hard_neg_k: 20
+  hard_neg_text_threshold: 0.8
+  hard_neg_num_seeds: 16
+  hard_neg_per_seed: 3
+
+  # Data loading
+  num_workers: 4
+  pin_memory: true
+
+  # Logging
+  log_every: 100
+  save_every: 10
+  use_wandb: false
+
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
+
+evaluation:
+  # Retrieval tasks
+  tasks:
+    - text_to_brep
+    - text_to_pc
+    - brep_to_pc
+    - pc_to_brep
+
+  # Metrics
+  metrics:
+    - recall@1
+    - recall@5
+    - recall@10
+    - mrr
+
+  # Batch size for evaluation
+  batch_size: 128
