@@ -7,7 +7,7 @@ Provides unified interface to:
 - Unified projection to common embedding dimension
 """
 
-from .brep_encoder import BRepEncoder
+from .brep_encoder import BRepEncoder, ensure_autobrep_weights
 from .pointbert_encoder import PointBertEncoder
 from .unified_projection import UnifiedInputProjection
 
@@ -15,4 +15,5 @@ __all__ = [
     "BRepEncoder",
     "PointBertEncoder",
     "UnifiedInputProjection",
+    "ensure_autobrep_weights",
 ]

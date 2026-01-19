@@ -51,7 +51,7 @@ tau_ground_init: 0.1
 
 encoders:
   # B-Rep encoder (AutoBrep-style FSQ VAE)
-  # Features are pre-computed using scripts/precompute_brep_features.py
+  # Features are pre-computed using scripts/precompute_brep_features_step.py
   brep:
     # Output dimensions (matching AutoBrep XAEncoder)
     face_dim: 48  # 3 * 16 (surfZ dimension)
@@ -65,9 +65,11 @@ encoders:
     max_faces: 192
     max_edges: 512
 
-    # Pretrained weights (for pre-computation)
-    surface_checkpoint: null  # pretrained/autobrep/surface_fsq_vae.pt
-    edge_checkpoint: null     # pretrained/autobrep/edge_fsq_vae.pt
+    # Pretrained weights (auto-downloaded from HuggingFace if not specified)
+    # Set to "auto" or null to auto-download from SamGiantEagle/AutoBrep
+    surface_checkpoint: auto
+    edge_checkpoint: auto
+    auto_download: true  # Auto-download from HuggingFace if checkpoints not found
 
     # Pre-computed features are required for GFA training
     use_cached_features: true
