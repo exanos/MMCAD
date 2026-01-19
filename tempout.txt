@@ -1,0 +1,59 @@
+(clip4cad) D:\Defect_Det\MMCAD\MMCAD>python scripts\test_dry_run.py --test full-model
+======================================================================
+CLIP4CAD-H DRY RUN TESTS
+======================================================================
+Device: cuda
+PyTorch version: 2.5.1+cu121
+CUDA available: True
+GPU: NVIDIA GeForce RTX 4090
+======================================================================
+
+======================================================================
+Testing: CLIP4CAD_H (full model)
+======================================================================
+Initializing CLIP4CAD_H model...
+Point-BERT encoder frozen
+Loading text LLM...
+Loading LLM: microsoft/Phi-4-mini-instruct
+`torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|                                                                                                                                                                                               | 0/2 [00:00<?, ?it/s]Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download. For better performance, install the package with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download. For better performance, install the package with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+                                                                                                                                                                                                                                            Error while downloading from https://huggingface.co/microsoft/Phi-4-mini-instruct/resolve/cfbefacb99257ffa30c83adab238a50856ac3083/model-00001-of-00002.safetensors: HTTPSConnectionPool(host='cas-bridge.xethub.hf.co', port=443): Read timed out.-00001-of-00002.safetensors:  17%|██████████████████████████▌                                                                                                                                    | 818M/4.90G [07:27<1:07:12, 1.01MB/s]
+Trying to resume download...
+Error while downloading from https://huggingface.co/microsoft/Phi-4-mini-instruct/resolve/cfbefacb99257ffa30c83adab238a50856ac3083/model-00002-of-00002.safetensors: HTTPSConnectionPool(host='cas-bridge.xethub.hf.co', port=443): Read timed out.
+Trying to resume download...
+model-00002-of-00002.safetensors: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2.77G/2.77G [20:27<00:00, 1.49MB/s]
+model-00002-of-00002.safetensors:  34%|█████████████████████████████████████████████████████▉                                                                                                          | 933M/2.77G [28:16<2:06:52, 241kB/s]
+C:\Users\User\anaconda3\envs\clip4cad\lib\site-packages\huggingface_hub\file_download.py:143: UserWarning: `huggingface_hub` cache-system uses symlinks by default to efficiently store duplicated files but your machine does not support them in C:\Users\User\.cache\huggingface\hub\models--microsoft--Phi-4-mini-instruct. Caching files will still work but in a degraded version that might require more space on your disk. This warning can be disabled by setting the `HF_HUB_DISABLE_SYMLINKS_WARNING` environment variable. For more details, see https://huggingface.co/docs/huggingface_hub/how-to-cache#limitations.█████████████████████████████████████████████████████████████▉| 2.77G/2.77G [20:27<00:00, 2.81MB/s]
+To support symlinks on Windows, you either need to activate Developer Mode or to run Python as an administrator. In order to activate developer mode, see this article: https://docs.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development
+  warnings.warn(message)
+                                                                                                                                                                                                                                            Error while downloading from https://huggingface.co/microsoft/Phi-4-mini-instruct/resolve/cfbefacb99257ffa30c83adab238a50856ac3083/model-00001-of-00002.safetensors: HTTPSConnectionPool(host='cas-bridge.xethub.hf.co', port=443): Read timed out.
+Trying to resume download...sors:  52%|███████████████████████████████████████████████████████████████████████████████████▊                                                                            | 2.57G/4.90G [22:50<21:52, 1.78MB/s]
+'(ReadTimeoutError("HTTPSConnectionPool(host='cas-bridge.xethub.hf.co', port=443): Read timed out. (read timeout=10)"), '(Request ID: 55cbec68-ef80-461f-bfe5-1d9bbff1cc1f)')' thrown while requesting GET https://huggingface.co/microsoft/Phi-4-mini-instruct/resolve/cfbefacb99257ffa30c83adab238a50856ac3083/model-00001-of-00002.safetensors
+Retrying in 1s [Retry 1/5].
+model-00001-of-00002.safetensors: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4.90G/4.90G [08:40<00:00, 4.48MB/s]
+model-00001-of-00002.safetensors:  52%|████████████████████████████████████████████████████████████████████████████████████▎                                                                            | 2.57G/4.90G [31:50<42:26, 917kB/s]
+model-00001-of-00002.safetensors:  17%|██████████████████████████▋                                                                                                                                     | 818M/4.90G [39:38<7:09:01, 159kB/s]
+Fetching 2 files: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [39:41<00:00, 1190.77s/it]
+Flash attention not available, using eager: FlashAttention2 has been toggled on, but it cannot be used due to the following error: the package flash_attn seems to be not installed. Please refer to the documentation of https://huggingface.co/docs/transformers/perf_infer_gpu_one#flashattention-2 to install Flash Attention 2.
+Loading checkpoint shards: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:04<00:00,  2.46s/it]
+LLM loaded: microsoft/Phi-4-mini-instruct (hidden_dim=3072)
+Running forward pass...
+✗ FAIL: CLIP4CAD_H (full model)
+  → Error: Missing output key: brep_global
+  → Traceback: Traceback (most recent call last):
+  File "D:\Defect_Det\MMCAD\MMCAD\scripts\test_dry_run.py", line 449, in test_full_model
+    assert key in outputs, f"Missing output key: {key}"
+AssertionError: Missing output key: brep_global
+
+
+======================================================================
+TEST SUMMARY
+======================================================================
+Passed:   0
+Failed:   1
+Warnings: 0
+
+Failed Tests:
+  - CLIP4CAD_H (full model): Missing output key: brep_global
+======================================================================

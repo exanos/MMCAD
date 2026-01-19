@@ -7,14 +7,12 @@ Provides unified interface to:
 - Unified projection to common embedding dimension
 """
 
-from .brep_encoder import BRepEncoder, FaceEncoder, EdgeEncoder
+from .brep_encoder import BRepEncoder
 from .pointbert_encoder import PointBertEncoder
 from .unified_projection import UnifiedInputProjection
 
 __all__ = [
     "BRepEncoder",
-    "FaceEncoder",
-    "EdgeEncoder",
     "PointBertEncoder",
     "UnifiedInputProjection",
 ]
