@@ -6,6 +6,7 @@ This script reads STEP files and extracts B-Rep features (face grids and edge cu
 then encodes them using the AutoBrep-style encoder.
 
 Features:
+- Auto-download pretrained weights from HuggingFace (default behavior)
 - Multiprocessing for parallel geometry extraction (8-16x speedup)
 - Checkpointing every N batches (default 100) to allow resuming
 - Resume from checkpoint with --resume flag
@@ -17,11 +18,14 @@ Requirements:
     Install with: conda install -c conda-forge pythonocc-core
 
 Usage:
-    # Fast parallel mode (recommended)
+    # Fast parallel mode with auto-download (recommended)
     python scripts/precompute_brep_features_step.py --step-dir ../data/extracted_step_files --csv ../data/169k.csv --output-dir ../data/embeddings --num-workers 8
 
     # Resume from checkpoint
     python scripts/precompute_brep_features_step.py --step-dir ../data/extracted_step_files --csv ../data/169k.csv --output-dir ../data/embeddings --resume
+
+    # Without auto-download (random init or provide checkpoint)
+    python scripts/precompute_brep_features_step.py --step-dir ../data/extracted_step_files --csv ../data/169k.csv --output-dir ../data/embeddings --no-auto-download
 
 Output:
     Creates HDF5 file with structure:
@@ -558,11 +562,19 @@ def main():
         default="brep_features.h5",
         help="Output filename",
     )
+    parser.add_argument(
+        "--no-auto-download",
+        action="store_true",
+        help="Disable auto-download of pretrained weights from HuggingFace",
+    )
 
     args = parser.parse_args()
 
     # Determine number of workers
-    num_workers = args.num_workers if args.num_workers > 0 else cpu_count()
+    # Windows has a limit of 63 handles for WaitForMultipleObjects
+    import platform
+    max_workers = 60 if platform.system() == "Windows" else cpu_count()
+    num_workers = min(args.num_workers if args.num_workers > 0 else cpu_count(), max_workers)
 
     step_dir = Path(args.step_dir)
     csv_path = Path(args.csv)
@@ -574,11 +586,15 @@ def main():
     print("=" * 60)
     print("Pre-computing B-Rep Features from STEP Files")
     print("=" * 60)
+    auto_download = not args.no_auto_download
     print(f"STEP directory: {step_dir}")
     print(f"CSV file: {csv_path}")
     print(f"Output: {output_path}")
-    print(f"Surface checkpoint: {args.surface_checkpoint or 'None (random init)'}")
-    print(f"Edge checkpoint: {args.edge_checkpoint or 'None (random init)'}")
+    if auto_download and not args.surface_checkpoint and not args.edge_checkpoint:
+        print(f"Weights: auto-download from HuggingFace")
+    else:
+        print(f"Surface checkpoint: {args.surface_checkpoint or 'None (random init)'}")
+        print(f"Edge checkpoint: {args.edge_checkpoint or 'None (random init)'}")
     print(f"Device: {device}")
     print(f"Batch size: {args.batch_size}")
     print(f"Parallel workers: {num_workers}")
@@ -635,6 +651,7 @@ def main():
         edge_curve_size=args.edge_curve_size,
         surface_checkpoint=args.surface_checkpoint,
         edge_checkpoint=args.edge_checkpoint,
+        auto_download=auto_download,
         freeze=True,
     )
     model = model.to(device)
@@ -658,7 +675,16 @@ def main():
     is_first_write = not output_path.exists()
     all_processed_uids = list(processed_uids)
 
-    # Buffers
+    # Buffers for geometry (pre-GPU)
+    geom_buffer_faces = []
+    geom_buffer_edges = []
+    geom_buffer_face_masks = []
+    geom_buffer_edge_masks = []
+    geom_buffer_num_faces = []
+    geom_buffer_num_edges = []
+    geom_buffer_uids = []
+
+    # Buffers for encoded features (post-GPU)
     buffer_face_features = []
     buffer_edge_features = []
     buffer_face_masks = []
@@ -670,11 +696,51 @@ def main():
     processed_count = 0
     failed_count = 0
     batch_count = 0
+    gpu_batch_size = args.batch_size  # Batch size for GPU encoding
 
-    # Use multiprocessing pool
+    def encode_geometry_batch():
+        """Encode a batch of geometry through the GPU."""
+        nonlocal geom_buffer_faces, geom_buffer_edges, geom_buffer_face_masks
+        nonlocal geom_buffer_edge_masks, geom_buffer_num_faces, geom_buffer_num_edges
+        nonlocal geom_buffer_uids, buffer_face_features, buffer_edge_features
+        nonlocal buffer_face_masks, buffer_edge_masks, buffer_num_faces
+        nonlocal buffer_num_edges, buffer_uids
+
+        if not geom_buffer_faces:
+            return
+
+        # Stack geometry into batches
+        faces_batch = torch.from_numpy(np.stack(geom_buffer_faces, axis=0)).to(device)
+        edges_batch = torch.from_numpy(np.stack(geom_buffer_edges, axis=0)).to(device)
+        face_mask_batch = torch.from_numpy(np.stack(geom_buffer_face_masks, axis=0)).to(device)
+        edge_mask_batch = torch.from_numpy(np.stack(geom_buffer_edge_masks, axis=0)).to(device)
+
+        # GPU encoding
+        with torch.no_grad():
+            face_feats, edge_feats = model(faces_batch, edges_batch, face_mask_batch, edge_mask_batch)
+
+        # Move results to CPU and add to feature buffers
+        buffer_face_features.append(face_feats.cpu().numpy())
+        buffer_edge_features.append(edge_feats.cpu().numpy())
+        buffer_face_masks.extend(geom_buffer_face_masks)
+        buffer_edge_masks.extend(geom_buffer_edge_masks)
+        buffer_num_faces.extend(geom_buffer_num_faces)
+        buffer_num_edges.extend(geom_buffer_num_edges)
+        buffer_uids.extend(geom_buffer_uids)
+
+        # Clear geometry buffers
+        geom_buffer_faces = []
+        geom_buffer_edges = []
+        geom_buffer_face_masks = []
+        geom_buffer_edge_masks = []
+        geom_buffer_num_faces = []
+        geom_buffer_num_edges = []
+        geom_buffer_uids = []
+
+    # Use multiprocessing pool with imap_unordered for better throughput
     with Pool(num_workers) as pool:
         pbar = tqdm(
-            pool.imap(process_single_file, worker_args),
+            pool.imap_unordered(process_single_file, worker_args, chunksize=10),
             total=len(worker_args),
             desc="Processing STEP files"
         )
@@ -684,30 +750,29 @@ def main():
                 failed_count += 1
                 continue
 
-            # GPU encoding
-            faces = torch.from_numpy(result["faces"]).unsqueeze(0).to(device)  # [1, F, H, W, 3]
-            edges = torch.from_numpy(result["edges"]).unsqueeze(0).to(device)  # [1, E, L, 3]
-            face_mask = torch.from_numpy(result["face_mask"]).unsqueeze(0).to(device)
-            edge_mask = torch.from_numpy(result["edge_mask"]).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                face_feats, edge_feats = model(faces, edges, face_mask, edge_mask)
-
-            # Add to buffer
-            buffer_face_features.append(face_feats.cpu().numpy())
-            buffer_edge_features.append(edge_feats.cpu().numpy())
-            buffer_face_masks.append(result["face_mask"])
-            buffer_edge_masks.append(result["edge_mask"])
-            buffer_num_faces.append(result["num_faces"])
-            buffer_num_edges.append(result["num_edges"])
-            buffer_uids.append(result["uid"])
+            # Add to geometry buffer
+            geom_buffer_faces.append(result["faces"])
+            geom_buffer_edges.append(result["edges"])
+            geom_buffer_face_masks.append(result["face_mask"])
+            geom_buffer_edge_masks.append(result["edge_mask"])
+            geom_buffer_num_faces.append(result["num_faces"])
+            geom_buffer_num_edges.append(result["num_edges"])
+            geom_buffer_uids.append(result["uid"])
             all_processed_uids.append(result["uid"])
 
             processed_count += 1
 
-            # Checkpoint
-            if len(buffer_uids) >= args.batch_size * args.checkpoint_every:
+            # Encode when we have a full batch
+            if len(geom_buffer_faces) >= gpu_batch_size:
+                encode_geometry_batch()
+                pbar.set_postfix({"gpu_batches": len(buffer_face_features), "failed": failed_count})
+
+            # Checkpoint (save to disk)
+            if len(buffer_uids) >= gpu_batch_size * args.checkpoint_every:
                 pbar.set_postfix({"status": "saving..."})
+
+                # Encode any remaining geometry
+                encode_geometry_batch()
 
                 face_feat_array = np.concatenate(buffer_face_features, axis=0)
                 edge_feat_array = np.concatenate(buffer_edge_features, axis=0)
@@ -737,7 +802,7 @@ def main():
 
                 save_checkpoint(checkpoint_path, processed_count, all_processed_uids)
 
-                # Clear buffers
+                # Clear feature buffers
                 buffer_face_features = []
                 buffer_edge_features = []
                 buffer_face_masks = []
@@ -753,7 +818,10 @@ def main():
                 batch_count += 1
                 pbar.set_postfix({"saved": batch_count, "failed": failed_count})
 
-    # Save remaining
+    # Encode any remaining geometry
+    encode_geometry_batch()
+
+    # Save remaining features
     if buffer_uids:
         print("Saving final batch...")
         face_feat_array = np.concatenate(buffer_face_features, axis=0)

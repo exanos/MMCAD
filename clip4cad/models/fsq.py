@@ -200,109 +200,178 @@ class FSQ(nn.Module):
 
 
 class ResBlock2D(nn.Module):
-    """Residual block for 2D convolutions."""
+    """
+    Residual block for 2D convolutions matching AutoBrep architecture.
+
+    AutoBrep uses: norm -> act -> conv1 -> conv2 with single GroupNorm.
+    """
 
     def __init__(self, channels: int, kernel_size: int = 3):
         super().__init__()
 
+        # AutoBrep uses single norm at the start
+        self.norm = nn.GroupNorm(min(32, channels), channels)
         self.conv1 = nn.Conv2d(
             channels, channels, kernel_size,
             padding=kernel_size // 2
         )
         self.conv2 = nn.Conv2d(
             channels, channels, kernel_size,
-            padding=kernel_size // 2
+            padding=kernel_size // 2, bias=False  # AutoBrep has no bias on conv2
         )
-        self.norm1 = nn.GroupNorm(min(32, channels), channels)
-        self.norm2 = nn.GroupNorm(min(32, channels), channels)
-        self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = self.norm1(x)
-        x = self.act(x)
+        x = self.norm(x)
+        x = torch.nn.functional.silu(x)
         x = self.conv1(x)
-        x = self.norm2(x)
-        x = self.act(x)
+        x = torch.nn.functional.silu(x)
         x = self.conv2(x)
         return x + residual
 
 
 class ResBlock1D(nn.Module):
-    """Residual block for 1D convolutions."""
+    """
+    Residual block for 1D convolutions matching AutoBrep architecture.
+    """
 
     def __init__(self, channels: int, kernel_size: int = 3):
         super().__init__()
 
+        self.norm = nn.GroupNorm(min(32, channels), channels)
         self.conv1 = nn.Conv1d(
             channels, channels, kernel_size,
             padding=kernel_size // 2
         )
         self.conv2 = nn.Conv1d(
             channels, channels, kernel_size,
-            padding=kernel_size // 2
+            padding=kernel_size // 2, bias=False
         )
-        self.norm1 = nn.GroupNorm(min(32, channels), channels)
-        self.norm2 = nn.GroupNorm(min(32, channels), channels)
-        self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = self.norm1(x)
-        x = self.act(x)
+        x = self.norm(x)
+        x = torch.nn.functional.silu(x)
         x = self.conv1(x)
-        x = self.norm2(x)
-        x = self.act(x)
+        x = torch.nn.functional.silu(x)
         x = self.conv2(x)
         return x + residual
 
 
+class Downsample2D(nn.Module):
+    """Downsample with conv, matching AutoBrep architecture."""
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
+
+class DownBlock2D(nn.Module):
+    """
+    Down block with ResBlocks + optional downsample, matching AutoBrep.
+
+    Structure: [ResBlock, ResBlock, Downsample]
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_res_blocks: int = 2,
+        add_downsample: bool = True,
+    ):
+        super().__init__()
+
+        # ResBlocks operate at in_channels
+        blocks = []
+        for _ in range(num_res_blocks):
+            blocks.append(ResBlock2D(in_channels))
+        self.res_blocks = nn.ModuleList(blocks)
+
+        # Downsample changes channels
+        self.downsample = Downsample2D(in_channels, out_channels) if add_downsample else None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for block in self.res_blocks:
+            x = block(x)
+        if self.downsample is not None:
+            x = self.downsample(x)
+        return x
+
+
 class Encoder2D(nn.Module):
     """
-    2D Encoder for surface grids, based on AutoBrep SurfaceFSQVAE.
+    2D Encoder for surface grids, matching AutoBrep SurfaceFSQVAE encoder.
 
-    Progressively downsamples spatial dimensions while increasing channels.
+    AutoBrep architecture:
+    - conv_in: 3 -> 128
+    - 4 down blocks with channels [128, 256, 512, 512]
+    - Each stage has ResBlocks + skip downsample (loaded but not used in encoder forward)
+    - Main path uses strided projection convs between stages (not in checkpoint)
+    - conv_out: 512 -> 4
     """
 
     def __init__(
         self,
         in_channels: int = 3,
-        base_channels: int = 64,
-        channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
+        base_channels: int = 128,
+        channel_mult: Tuple[int, ...] = (1, 2, 4, 4),
         num_res_blocks: int = 2,
-        latent_channels: int = 16,
+        latent_channels: int = 4,
     ):
         super().__init__()
 
         self.in_channels = in_channels
         self.latent_channels = latent_channels
+        self.channel_mult = channel_mult
 
         # Initial conv
         self.conv_in = nn.Conv2d(in_channels, base_channels, 3, padding=1)
 
-        # Downsampling blocks
+        # Downsampling blocks - nested ModuleList to match AutoBrep checkpoint keys
+        # down_blocks.{stage}.{0,1} = ResBlocks, down_blocks.{stage}.2 = skip Downsample
         self.down_blocks = nn.ModuleList()
-        ch = base_channels
 
-        for mult in channel_mult:
-            out_ch = base_channels * mult
+        # AutoBrep skip downsample output channels (loaded for checkpoint compat, not used in forward)
+        skip_out_channels = [64, 128, 128]
 
-            # Residual blocks
+        for i, mult in enumerate(channel_mult):
+            stage_ch = base_channels * mult
+            is_last = (i == len(channel_mult) - 1)
+
+            # Create stage as ModuleList [ResBlock, ResBlock, SkipDownsample?]
+            stage = nn.ModuleList()
+
+            # Add ResBlocks at this stage's channel count
             for _ in range(num_res_blocks):
-                self.down_blocks.append(ResBlock2D(ch))
-                ch = ch  # ResBlocks keep channels same
+                stage.append(ResBlock2D(stage_ch))
 
-            # Channel change + downsample
-            self.down_blocks.append(
-                nn.Conv2d(ch, out_ch, 4, stride=2, padding=1)
+            # Add skip downsample (for checkpoint compatibility)
+            if not is_last:
+                ds_out = skip_out_channels[i] if i < len(skip_out_channels) else stage_ch
+                stage.append(Downsample2D(stage_ch, ds_out))
+
+            self.down_blocks.append(stage)
+
+        # Channel projections between stages (not in checkpoint, randomly initialized)
+        # These handle channel changes AND spatial downsampling for the main path
+        self.projections = nn.ModuleList()
+        for i in range(len(channel_mult) - 1):
+            in_ch = base_channels * channel_mult[i]
+            out_ch = base_channels * channel_mult[i + 1]
+            # Strided conv for spatial downsampling + channel projection
+            self.projections.append(
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=2, padding=1)
             )
-            ch = out_ch
 
-        # Final blocks
-        self.mid_block = ResBlock2D(ch)
-        self.norm_out = nn.GroupNorm(min(32, ch), ch)
-        self.conv_out = nn.Conv2d(ch, latent_channels, 1)
-        self.act = nn.SiLU()
+        # Final output channels
+        final_ch = base_channels * channel_mult[-1]
+
+        # Final conv
+        self.conv_out = nn.Conv2d(final_ch, latent_channels, 3, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -314,29 +383,48 @@ class Encoder2D(nn.Module):
         """
         x = self.conv_in(x)
 
-        for block in self.down_blocks:
-            x = block(x)
-            if isinstance(block, ResBlock2D):
-                x = self.act(x)
+        for i, stage in enumerate(self.down_blocks):
+            # Apply ResBlocks only (first 2 elements, skip downsample at index 2)
+            for j in range(min(2, len(stage))):
+                x = stage[j](x)
 
-        x = self.mid_block(x)
-        x = self.norm_out(x)
-        x = self.act(x)
+            # Apply projection to next stage channels (except after last stage)
+            if i < len(self.projections):
+                x = self.projections[i](x)
+
         x = self.conv_out(x)
 
         return x
 
 
+class Downsample1D(nn.Module):
+    """Downsample with conv for 1D, matching AutoBrep architecture."""
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv = nn.Conv1d(in_channels, out_channels, 3, stride=2, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
+
 class Encoder1D(nn.Module):
     """
-    1D Encoder for edge curves, based on AutoBrep EdgeFSQVAE.
+    1D Encoder for edge curves, matching AutoBrep EdgeFSQVAE encoder.
+
+    AutoBrep edge encoder architecture:
+    - conv_in: 3 -> 128
+    - 4 down blocks with channels [128, 256, 512, 512]
+    - Each stage has ResBlocks + skip downsample (loaded but not used in encoder forward)
+    - Main path uses strided projection convs between stages (not in checkpoint)
+    - conv_out: 512 -> 4
     """
 
     def __init__(
         self,
         in_channels: int = 3,
-        base_channels: int = 64,
-        channel_mult: Tuple[int, ...] = (1, 2, 4),
+        base_channels: int = 128,
+        channel_mult: Tuple[int, ...] = (1, 2, 4, 4),
         num_res_blocks: int = 2,
         latent_channels: int = 4,
     ):
@@ -344,30 +432,50 @@ class Encoder1D(nn.Module):
 
         self.in_channels = in_channels
         self.latent_channels = latent_channels
+        self.channel_mult = channel_mult
 
         # Initial conv
         self.conv_in = nn.Conv1d(in_channels, base_channels, 3, padding=1)
 
-        # Downsampling blocks
+        # Downsampling blocks - nested ModuleList to match AutoBrep checkpoint keys
         self.down_blocks = nn.ModuleList()
-        ch = base_channels
 
-        for mult in channel_mult:
-            out_ch = base_channels * mult
+        # Edge encoder skip downsample output channels (loaded for checkpoint compat)
+        skip_out_channels = [128, 256, 256]
 
+        for i, mult in enumerate(channel_mult):
+            stage_ch = base_channels * mult
+            is_last = (i == len(channel_mult) - 1)
+
+            # Create stage as ModuleList [ResBlock, ResBlock, SkipDownsample?]
+            stage = nn.ModuleList()
+
+            # Add ResBlocks at this stage's channel count
             for _ in range(num_res_blocks):
-                self.down_blocks.append(ResBlock1D(ch))
+                stage.append(ResBlock1D(stage_ch))
 
-            self.down_blocks.append(
-                nn.Conv1d(ch, out_ch, 4, stride=2, padding=1)
+            # Add skip downsample (for checkpoint compatibility)
+            if not is_last:
+                ds_out = skip_out_channels[i] if i < len(skip_out_channels) else stage_ch
+                stage.append(Downsample1D(stage_ch, ds_out))
+
+            self.down_blocks.append(stage)
+
+        # Channel projections between stages (not in checkpoint, randomly initialized)
+        self.projections = nn.ModuleList()
+        for i in range(len(channel_mult) - 1):
+            in_ch = base_channels * channel_mult[i]
+            out_ch = base_channels * channel_mult[i + 1]
+            # Strided conv for spatial downsampling + channel projection
+            self.projections.append(
+                nn.Conv1d(in_ch, out_ch, kernel_size=3, stride=2, padding=1)
             )
-            ch = out_ch
 
-        # Final blocks
-        self.mid_block = ResBlock1D(ch)
-        self.norm_out = nn.GroupNorm(min(32, ch), ch)
-        self.conv_out = nn.Conv1d(ch, latent_channels, 1)
-        self.act = nn.SiLU()
+        # Final output channels
+        final_ch = base_channels * channel_mult[-1]
+
+        # Final conv
+        self.conv_out = nn.Conv1d(final_ch, latent_channels, 3, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -379,14 +487,15 @@ class Encoder1D(nn.Module):
         """
         x = self.conv_in(x)
 
-        for block in self.down_blocks:
-            x = block(x)
-            if isinstance(block, ResBlock1D):
-                x = self.act(x)
+        for i, stage in enumerate(self.down_blocks):
+            # Apply ResBlocks only (first 2 elements, skip downsample at index 2)
+            for j in range(min(2, len(stage))):
+                x = stage[j](x)
 
-        x = self.mid_block(x)
-        x = self.norm_out(x)
-        x = self.act(x)
+            # Apply projection to next stage channels (except after last stage)
+            if i < len(self.projections):
+                x = self.projections[i](x)
+
         x = self.conv_out(x)
 
         return x
@@ -402,10 +511,10 @@ class SurfaceFSQEncoder(nn.Module):
     def __init__(
         self,
         grid_size: int = 32,
-        base_channels: int = 64,
-        channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
+        base_channels: int = 128,  # AutoBrep uses 128
+        channel_mult: Tuple[int, ...] = (1, 2, 4, 4),  # [128, 256, 512, 512]
         num_res_blocks: int = 2,
-        latent_channels: int = 16,
+        latent_channels: int = 4,  # AutoBrep uses latent_channels=3, z_dim=4
         fsq_levels: List[int] = [8, 5, 5, 5],
         output_dim: int = 48,  # 3 * 16 as in XAEncoder surfz
         use_fsq: bool = False,
@@ -426,7 +535,8 @@ class SurfaceFSQEncoder(nn.Module):
         )
 
         # Calculate spatial size after encoding
-        num_downsamples = len(channel_mult)
+        # Number of downsamples = number of projection convs = len(channel_mult) - 1
+        num_downsamples = len(channel_mult) - 1
         self.latent_size = grid_size // (2 ** num_downsamples)
         self.latent_flat_dim = latent_channels * self.latent_size * self.latent_size
 
@@ -481,10 +591,10 @@ class EdgeFSQEncoder(nn.Module):
     def __init__(
         self,
         curve_length: int = 32,
-        base_channels: int = 64,
-        channel_mult: Tuple[int, ...] = (1, 2, 4),
+        base_channels: int = 128,  # AutoBrep uses 128
+        channel_mult: Tuple[int, ...] = (1, 2, 4, 4),  # [128, 256, 512, 512] - 4 stages like surface
         num_res_blocks: int = 2,
-        latent_channels: int = 4,
+        latent_channels: int = 4,  # AutoBrep uses latent_channels=3, z_dim=4
         fsq_levels: List[int] = [8, 5, 5, 5],
         output_dim: int = 12,  # 3 * 4 as in XAEncoder edgez
         use_fsq: bool = False,
@@ -505,7 +615,8 @@ class EdgeFSQEncoder(nn.Module):
         )
 
         # Calculate length after encoding
-        num_downsamples = len(channel_mult)
+        # Number of downsamples = number of projection convs = len(channel_mult) - 1
+        num_downsamples = len(channel_mult) - 1
         self.latent_length = curve_length // (2 ** num_downsamples)
         self.latent_flat_dim = latent_channels * self.latent_length
 

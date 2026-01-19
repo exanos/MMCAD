@@ -13,12 +13,81 @@ Reference:
 - Pretrained weights: https://huggingface.co/SamGiantEagle/AutoBrep
 """
 
+import os
+import traceback
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional, Dict, Any
 from pathlib import Path
 
 from ..fsq import SurfaceFSQEncoder, EdgeFSQEncoder
+
+
+# Default location for AutoBrep weights
+DEFAULT_AUTOBREP_DIR = Path("pretrained/autobrep")
+AUTOBREP_REPO_ID = "SamGiantEagle/AutoBrep"
+AUTOBREP_SURFACE_FILE = "surf-fsq.ckpt"
+AUTOBREP_EDGE_FILE = "edge-fsq.ckpt"
+
+
+def ensure_autobrep_weights(
+    output_dir: Optional[str] = None,
+    force: bool = False,
+) -> Tuple[Path, Path]:
+    """
+    Ensure AutoBrep weights are downloaded, downloading from HuggingFace if needed.
+
+    Args:
+        output_dir: Directory to save weights (default: pretrained/autobrep)
+        force: Force re-download even if files exist
+
+    Returns:
+        Tuple of (surface_checkpoint_path, edge_checkpoint_path)
+    """
+    if output_dir is None:
+        output_dir = os.environ.get("AUTOBREP_WEIGHTS", str(DEFAULT_AUTOBREP_DIR))
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    surface_path = output_path / AUTOBREP_SURFACE_FILE
+    edge_path = output_path / AUTOBREP_EDGE_FILE
+
+    # Check if both files exist
+    if surface_path.exists() and edge_path.exists() and not force:
+        return surface_path, edge_path
+
+    # Download from HuggingFace
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required for auto-downloading weights. "
+            "Install with: pip install huggingface_hub"
+        )
+
+    print(f"Downloading AutoBrep weights from {AUTOBREP_REPO_ID}...")
+
+    if not surface_path.exists() or force:
+        print(f"  Downloading {AUTOBREP_SURFACE_FILE}...")
+        hf_hub_download(
+            repo_id=AUTOBREP_REPO_ID,
+            filename=AUTOBREP_SURFACE_FILE,
+            local_dir=str(output_path),
+            local_dir_use_symlinks=False,
+        )
+
+    if not edge_path.exists() or force:
+        print(f"  Downloading {AUTOBREP_EDGE_FILE}...")
+        hf_hub_download(
+            repo_id=AUTOBREP_REPO_ID,
+            filename=AUTOBREP_EDGE_FILE,
+            local_dir=str(output_path),
+            local_dir_use_symlinks=False,
+        )
+
+    print(f"  Weights saved to: {output_path}")
+    return surface_path, edge_path
 
 
 class BRepEncoder(nn.Module):
@@ -37,12 +106,14 @@ class BRepEncoder(nn.Module):
         # Input sizes
         face_grid_size: int = 32,
         edge_curve_size: int = 32,
-        # Architecture params (matching AutoBrep defaults)
-        face_base_channels: int = 64,
-        face_channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
-        face_latent_channels: int = 16,
-        edge_base_channels: int = 64,
-        edge_channel_mult: Tuple[int, ...] = (1, 2, 4),
+        # Architecture params (matching AutoBrep exactly)
+        # Surface VAE: 4 down blocks, channels [128, 256, 512, 512]
+        face_base_channels: int = 128,
+        face_channel_mult: Tuple[int, ...] = (1, 2, 4, 4),
+        face_latent_channels: int = 4,  # AutoBrep uses latent_channels=3, z_dim=4
+        # Edge VAE: 4 down blocks, channels [128, 256, 512, 512]
+        edge_base_channels: int = 128,
+        edge_channel_mult: Tuple[int, ...] = (1, 2, 4, 4),
         edge_latent_channels: int = 4,
         # FSQ settings (from AutoBrep config: levels [8,5,5,5] = 1000 codes)
         fsq_levels: Tuple[int, ...] = (8, 5, 5, 5),
@@ -50,6 +121,7 @@ class BRepEncoder(nn.Module):
         # Pretrained weights
         surface_checkpoint: Optional[str] = None,
         edge_checkpoint: Optional[str] = None,
+        auto_download: bool = True,  # Auto-download from HuggingFace if no checkpoint provided
         freeze: bool = False,
     ):
         """
@@ -67,7 +139,11 @@ class BRepEncoder(nn.Module):
             fsq_levels: FSQ quantization levels (not used for features)
             use_fsq: Whether to apply FSQ (typically False for CLIP4CAD)
             surface_checkpoint: Path to AutoBrep surface FSQ VAE checkpoint
+                Can be "auto" to use auto-downloaded weights.
             edge_checkpoint: Path to AutoBrep edge FSQ VAE checkpoint
+                Can be "auto" to use auto-downloaded weights.
+            auto_download: Whether to auto-download weights from HuggingFace
+                if no checkpoint is provided.
             freeze: Whether to freeze encoder weights
         """
         super().__init__()
@@ -97,10 +173,29 @@ class BRepEncoder(nn.Module):
             use_fsq=use_fsq,
         )
 
+        # Handle checkpoint loading
+        # If "auto" is specified or auto_download is True and no checkpoints provided,
+        # download from HuggingFace
+        if surface_checkpoint == "auto" or edge_checkpoint == "auto" or (
+            auto_download and surface_checkpoint is None and edge_checkpoint is None
+        ):
+            try:
+                auto_surface, auto_edge = ensure_autobrep_weights()
+                if surface_checkpoint == "auto" or surface_checkpoint is None:
+                    surface_checkpoint = str(auto_surface)
+                if edge_checkpoint == "auto" or edge_checkpoint is None:
+                    edge_checkpoint = str(auto_edge)
+            except Exception as e:
+                print(f"Warning: Failed to auto-download weights: {e}")
+                if surface_checkpoint == "auto":
+                    surface_checkpoint = None
+                if edge_checkpoint == "auto":
+                    edge_checkpoint = None
+
         # Load pretrained weights if provided
-        if surface_checkpoint:
+        if surface_checkpoint and surface_checkpoint != "auto":
             self.load_surface_checkpoint(surface_checkpoint)
-        if edge_checkpoint:
+        if edge_checkpoint and edge_checkpoint != "auto":
             self.load_edge_checkpoint(edge_checkpoint)
 
         # Freeze if requested
@@ -111,8 +206,8 @@ class BRepEncoder(nn.Module):
         """
         Load pretrained surface FSQ VAE weights from AutoBrep.
 
-        AutoBrep checkpoint structure:
-        - 'state_dict' or direct state dict
+        AutoBrep checkpoint structure (PyTorch Lightning format):
+        - 'state_dict' key containing the model weights
         - Keys like 'encoder.conv_in.weight', 'encoder.down_blocks.0.conv1.weight', etc.
         """
         path = Path(path)
@@ -123,13 +218,15 @@ class BRepEncoder(nn.Module):
         try:
             checkpoint = torch.load(path, map_location="cpu", weights_only=False)
 
-            # Handle different checkpoint formats
+            # Handle different checkpoint formats (PyTorch Lightning, vanilla PyTorch, etc.)
             if isinstance(checkpoint, dict):
                 if "state_dict" in checkpoint:
+                    # PyTorch Lightning format
                     state_dict = checkpoint["state_dict"]
                 elif "model_state_dict" in checkpoint:
                     state_dict = checkpoint["model_state_dict"]
                 else:
+                    # Direct state dict
                     state_dict = checkpoint
             else:
                 print(f"Warning: Unexpected checkpoint format: {type(checkpoint)}")
@@ -138,21 +235,27 @@ class BRepEncoder(nn.Module):
             # Map AutoBrep keys to our encoder
             mapped_state = self._map_autobrep_surface_keys(state_dict)
 
+            if not mapped_state:
+                print(f"Warning: No encoder keys found in checkpoint")
+                return False
+
             # Load with flexibility for architecture differences
             missing, unexpected = self.face_encoder.encoder.load_state_dict(
                 mapped_state, strict=False
             )
 
+            loaded_keys = len(mapped_state) - len(unexpected)
+            print(f"Surface encoder: loaded {loaded_keys} keys from {path.name}")
             if missing:
-                print(f"Surface encoder - missing keys: {len(missing)}")
+                print(f"  - missing keys: {len(missing)}")
             if unexpected:
-                print(f"Surface encoder - unexpected keys: {len(unexpected)}")
+                print(f"  - unexpected keys: {len(unexpected)}")
 
-            print(f"Loaded surface encoder weights from {path}")
             return True
 
         except Exception as e:
             print(f"Warning: Failed to load surface checkpoint: {e}")
+            traceback.print_exc()
             return False
 
     def load_edge_checkpoint(self, path: str) -> bool:
@@ -178,20 +281,26 @@ class BRepEncoder(nn.Module):
 
             mapped_state = self._map_autobrep_edge_keys(state_dict)
 
+            if not mapped_state:
+                print(f"Warning: No encoder keys found in checkpoint")
+                return False
+
             missing, unexpected = self.edge_encoder.encoder.load_state_dict(
                 mapped_state, strict=False
             )
 
+            loaded_keys = len(mapped_state) - len(unexpected)
+            print(f"Edge encoder: loaded {loaded_keys} keys from {path.name}")
             if missing:
-                print(f"Edge encoder - missing keys: {len(missing)}")
+                print(f"  - missing keys: {len(missing)}")
             if unexpected:
-                print(f"Edge encoder - unexpected keys: {len(unexpected)}")
+                print(f"  - unexpected keys: {len(unexpected)}")
 
-            print(f"Loaded edge encoder weights from {path}")
             return True
 
         except Exception as e:
             print(f"Warning: Failed to load edge checkpoint: {e}")
+            traceback.print_exc()
             return False
 
     def _map_autobrep_surface_keys(self, state_dict: Dict[str, Any]) -> Dict[str, Any]:

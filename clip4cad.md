@@ -26,6 +26,11 @@ We consider three modalities for each CAD model:
 
 **Boundary Representation (B-Rep).** A B-Rep model consists of parametric surfaces $\mathcal{S} = \{S_i\}_{i=1}^{F}$, curves $\mathcal{C} = \{C_j\}_{j=1}^{E}$, and their topological connectivity $\mathcal{T}_{SC} \in \{0,1\}^{F \times E}$. Following Willis et al. [AutoBrep, 2025], we represent each face as a point grid $\mathbf{G}_i \in \mathbb{R}^{32 \times 32 \times 3}$ sampled uniformly in the parametric $(u,v)$ domain, and each edge as a point sequence $\mathbf{E}_j \in \mathbb{R}^{32 \times 3}$. These are encoded using AutoBrep's FSQ VAE encoder to yield face tokens $\mathbf{z}_i^{\text{face}} \in \mathbb{R}^{d_f}$ and edge tokens $\mathbf{z}_j^{\text{edge}} \in \mathbb{R}^{d_e}$, where $d_f = 48$ and $d_e = 12$.
 
+The AutoBrep encoder architecture consists of:
+- **Surface encoder**: 4 stages with channels [128, 256, 512, 512], each containing 2 ResBlocks with single GroupNorm, followed by channel projections between stages. Final conv_out maps 512 → 4 latent channels.
+- **Edge encoder**: Similar 4-stage 1D architecture with channels [128, 256, 512, 512], processing edge point sequences.
+- **Pretrained weights**: Automatically downloaded from HuggingFace (`SamGiantEagle/AutoBrep`) when not present locally.
+
 **Point Cloud.** We sample $N = 10000$ points with surface normals from the model and encode using Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pre-trained weights. The encoder performs farthest point sampling to select $M = 512$ seed points, groups $k = 32$ nearest neighbors per seed, and processes through a 12-layer transformer with 12 attention heads, yielding patch tokens $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times d_{\text{pc}}}$ where $d_{\text{pc}} = 768$.
 
 **Text Description.** Each model is paired with a natural language description $T$ that explicitly references geometric features (e.g., "A cylindrical mounting boss with a central through-hole and four corner mounting slots"). We encode using a frozen large language model (Phi-4-mini, 3.8B parameters) to obtain contextualized token embeddings $\mathbf{H}^{\text{text}} \in \mathbb{R}^{L \times d_{\text{llm}}}$ where $d_{\text{llm}} = 3072$.
@@ -481,11 +486,37 @@ The alignment layers $\text{AlignNet}_{\text{brep}}$ and $\text{AlignNet}_{\text
 
 ### 10.1 Pre-computation Pipeline
 
-**B-Rep Features.** We use the AutoBrep FSQ VAE encoder [Willis et al., 2025] with publicly released weights trained on ABC-1M. For each face, we extract the 48-dimensional latent (3 × 16 surfZ channels). For each edge, we extract the 12-dimensional latent (3 × 4 edgeZ channels). These are concatenated with learned type embeddings and stored as HDF5 files.
+All encoder features are pre-computed using scripts in the `scripts/` directory:
 
-**Point Cloud Features.** We use Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] weights. We sample 10,000 points with normals (6 channels: xyz + normals) and extract all 513 patch token embeddings (512 patches + 1 CLS) at dimension 768 and store as HDF5 files.
+**B-Rep Features** (`scripts/precompute_brep_features_step.py`):
+- Reads STEP files directly using pythonOCC (OpenCASCADE bindings)
+- Extracts face UV grids (32×32×3) and edge point curves (32×3) from B-Rep topology
+- Encodes using AutoBrep-style FSQ VAE encoder with pretrained weights (auto-downloaded from HuggingFace)
+- Architecture: 4-stage encoder with channels [128, 256, 512, 512], ResBlocks with single GroupNorm
+- Outputs: 48-dimensional face features, 12-dimensional edge features
+- Features: Multiprocessing for parallel geometry extraction (max 60 workers on Windows), checkpointing every N batches, resume support
+- Storage: HDF5 with LZF compression
 
-**Text Features.** We use Phi-4-mini (3.8B parameters) [Microsoft, 2024] with frozen weights. We store the full sequence of hidden states at the final layer, dimension 3072, for each description. This enables the trainable text parser to attend to any position.
+```bash
+# Example usage
+python scripts/precompute_brep_features_step.py \
+    --step-dir ../data/extracted_step_files \
+    --csv ../data/169k.csv \
+    --output-dir ../data/embeddings \
+    --batch-size 32 --num-workers 60
+```
+
+**Point Cloud Features** (`scripts/precompute_pointcloud_features_ply.py`):
+- Reads PLY files with 10,000 points + normals (6 channels: xyz + normals)
+- Encodes using Point-BERT with ULIP-2 weights
+- Extracts all 513 patch token embeddings (512 patches + 1 CLS) at dimension 768
+- Features: Checkpointing, resume support, parallel processing
+
+**Text Features** (`scripts/precompute_text_embeddings_csv.py`):
+- Reads titles and descriptions from CSV file (columns: uid, title, description)
+- Encodes using Phi-4-mini (3.8B parameters) with frozen weights
+- Stores full sequence of hidden states at final layer (dimension 3072)
+- Features: Checkpointing, resume support, batched inference
 
 ### 10.2 Model Architecture Summary
 

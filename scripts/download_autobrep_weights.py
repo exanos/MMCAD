@@ -9,7 +9,12 @@ Usage:
     python scripts/download_autobrep_weights.py
     python scripts/download_autobrep_weights.py --output-dir pretrained/autobrep
 
+Note: The BRepEncoder now supports auto-download from HuggingFace when no
+checkpoint is provided. This script is useful for pre-downloading weights
+or downloading to a custom directory.
+
 HuggingFace repository: https://huggingface.co/SamGiantEagle/AutoBrep
+Files: surf-fsq.ckpt, edge-fsq.ckpt (PyTorch Lightning checkpoints)
 """
 
 import argparse
@@ -100,14 +105,19 @@ def download_weights(output_dir: str = "pretrained/autobrep", force: bool = Fals
             print(f"  - {p}")
 
         print()
-        print("To use these weights in CLIP4CAD-H, update your config:")
+        print("To use these weights in CLIP4CAD-H, you can:")
         print()
+        print("1. Let BRepEncoder auto-download (default behavior):")
+        print("   from clip4cad.models.encoders import BRepEncoder")
+        print("   model = BRepEncoder()  # auto-downloads if not present")
+        print()
+        print("2. Specify paths explicitly in config:")
         print("  model:")
         print("    brep:")
-        print(f"      surface_checkpoint: {output_path}/surface_fsq_vae.pt")
-        print(f"      edge_checkpoint: {output_path}/edge_fsq_vae.pt")
+        print(f"      surface_checkpoint: {output_path}/surf-fsq.ckpt")
+        print(f"      edge_checkpoint: {output_path}/edge-fsq.ckpt")
         print()
-        print("Or set the AUTOBREP_WEIGHTS environment variable:")
+        print("3. Set AUTOBREP_WEIGHTS environment variable:")
         print(f"  export AUTOBREP_WEIGHTS={output_path.absolute()}")
 
         return True
