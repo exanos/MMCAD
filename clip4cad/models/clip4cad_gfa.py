@@ -84,7 +84,7 @@ class CrossAttentionLayer(nn.Module):
         # Convert mask: our convention is True=valid, PyTorch MHA expects True=ignore
         attn_mask = None
         if key_padding_mask is not None:
-            attn_mask = ~key_padding_mask
+            attn_mask = ~key_padding_mask.bool()
 
         attn_out, attn_weights = self.attn(
             q_norm, kv_norm, kv_norm,
@@ -284,7 +284,7 @@ class CLIP4CAD_GFA(nn.Module):
         self.d_align = d_align
 
         # Max sequence lengths
-        self.max_brep_tokens = config.get("max_brep_tokens", 192)  # 64 faces + 128 edges
+        self.max_brep_tokens = config.get("max_brep_tokens", 704)  # 192 faces + 512 edges
         self.max_pc_tokens = config.encoders.pointcloud.get("num_tokens", 513)
         self.max_text_tokens = config.get("max_text_tokens", 512)
 

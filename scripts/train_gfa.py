@@ -105,6 +105,23 @@ def parse_args():
         default=42,
         help="Random seed",
     )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=None,
+        help="Override checkpoint frequency (epochs)",
+    )
+    parser.add_argument(
+        "--save-every-steps",
+        type=int,
+        default=None,
+        help="Save checkpoint every N steps (0 = disabled)",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help="Enable gradient checkpointing to reduce memory usage",
+    )
 
     return parser.parse_args()
 
@@ -140,6 +157,12 @@ def main():
         config.training.num_epochs_stage2 = args.epochs_stage2
     if args.use_wandb:
         config.training.use_wandb = True
+    if args.save_every is not None:
+        config.training.save_every = args.save_every
+    if args.save_every_steps is not None:
+        config.training.save_every_steps = args.save_every_steps
+    if args.gradient_checkpointing:
+        config.training.gradient_checkpointing = True
 
     # Create output directory
     output_dir = Path(args.output_dir)

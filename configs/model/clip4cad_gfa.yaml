@@ -25,14 +25,14 @@ d_align: 128
 num_feature_slots: 12
 
 # Attention configuration
-num_attention_heads: 10
+num_attention_heads: 8  # Must divide d_unified (256 / 8 = 32)
 num_parser_layers: 2
 
 # Regularization
 dropout: 0.1
 
 # Sequence length limits
-max_brep_tokens: 192    # Max faces (64) + edges (128)
+max_brep_tokens: 704    # Max faces (192) + edges (512)
 max_text_tokens: 512    # Max description length
 
 # Confidence threshold for active feature slots
@@ -62,8 +62,8 @@ encoders:
     edge_curve_size: 32  # 32 points per edge
 
     # Limits
-    max_faces: 64
-    max_edges: 128
+    max_faces: 192
+    max_edges: 512
 
     # Pretrained weights (for pre-computation)
     surface_checkpoint: null  # pretrained/autobrep/surface_fsq_vae.pt
@@ -150,10 +150,15 @@ training:
   num_workers: 4
   pin_memory: true
 
-  # Logging
+  # Logging and checkpointing
   log_every: 100
-  save_every: 10
+  save_every: 5             # Save checkpoint every N epochs
+  save_every_steps: 0       # Save checkpoint every N steps (0 = disabled)
   use_wandb: false
+
+  # Hardware optimization
+  gradient_checkpointing: false   # Enable to reduce GPU memory usage
+  empty_cache_every_epoch: true   # Clear GPU cache after each epoch
 
 # ============================================================================
 # Evaluation Configuration

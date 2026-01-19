@@ -10,8 +10,15 @@ Stage 2 (Epochs 31-70): Global Alignment with Hard Negatives
 - Full contrastive learning with all losses
 - Hard negative mining at stage transition
 - Hard negative batch construction
+
+Features:
+- Frequent checkpointing (configurable, default every 5 epochs)
+- GPU memory management (cache clearing after each epoch)
+- Gradient checkpointing support for reduced memory usage
+- Mixed precision training with automatic scaling
 """
 
+import gc
 import math
 import time
 from pathlib import Path
@@ -91,10 +98,15 @@ class GFATrainer:
             "num_workers": 4,
             "pin_memory": True,
 
-            # Logging
+            # Logging and checkpointing
             "log_every": 100,
-            "save_every": 10,
+            "save_every": 5,  # Save checkpoint every N epochs
+            "save_every_steps": 0,  # Save checkpoint every N steps (0 = disabled)
             "use_wandb": False,
+
+            # Hardware optimization
+            "gradient_checkpointing": False,  # Enable to reduce memory usage
+            "empty_cache_every_epoch": True,  # Clear GPU cache after each epoch
         }
         if config:
             self.config.update(config)
@@ -184,6 +196,12 @@ class GFATrainer:
         # Initialize scheduler
         self.scheduler = self._get_lr_scheduler(total_epochs)
 
+        # Enable gradient checkpointing if requested (saves memory)
+        if self.config.get("gradient_checkpointing", False):
+            if hasattr(self.model, 'enable_gradient_checkpointing'):
+                self.model.enable_gradient_checkpointing()
+                print("Gradient checkpointing enabled")
+
         print("=" * 60)
         print("CLIP4CAD-GFA Training")
         print("=" * 60)
@@ -192,6 +210,7 @@ class GFATrainer:
         print(f"Stage 2: {self.config['num_epochs_stage2']} epochs (alignment)")
         print(f"Batch size: {self.config['batch_size']}")
         print(f"Learning rate: {self.config['learning_rate']}")
+        print(f"Checkpoint every: {self.config['save_every']} epochs")
         print(f"Trainable parameters: {self.model.count_parameters(trainable_only=True):,}")
         print("=" * 60 + "\n")
 
@@ -204,6 +223,11 @@ class GFATrainer:
 
             # Train one epoch
             train_metrics = self._train_epoch()
+
+            # Clear GPU cache after each epoch to prevent memory fragmentation
+            if self.config.get("empty_cache_every_epoch", True) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
 
             # Validation
             val_metrics = None
@@ -322,6 +346,16 @@ class GFATrainer:
             if self.global_step % self.config["log_every"] == 0:
                 self._log_step(loss_dict)
 
+            # Step-level checkpointing (if enabled)
+            save_every_steps = self.config.get("save_every_steps", 0)
+            if save_every_steps > 0 and self.global_step % save_every_steps == 0:
+                pbar.set_postfix({"status": "saving checkpoint..."})
+                self._save_checkpoint(self.current_epoch, is_step_checkpoint=True)
+                pbar.set_postfix({
+                    "loss": f"{loss_dict['total']:.4f}",
+                    "saved": f"step {self.global_step}",
+                })
+
         # Average losses
         for key in epoch_losses:
             epoch_losses[key] /= max(num_batches, 1)
@@ -399,7 +433,8 @@ class GFATrainer:
         self,
         epoch: int,
         val_metrics: Optional[Dict[str, float]] = None,
-        is_best: bool = False
+        is_best: bool = False,
+        is_step_checkpoint: bool = False,
     ):
         """Save model checkpoint."""
         checkpoint = {
@@ -414,9 +449,17 @@ class GFATrainer:
             "best_val_loss": self.best_val_loss,
         }
 
-        # Save regular checkpoint
-        ckpt_path = self.output_dir / f"checkpoint_epoch{epoch}.pt"
+        # Save checkpoint (step-level or epoch-level)
+        if is_step_checkpoint:
+            ckpt_path = self.output_dir / f"checkpoint_step{self.global_step}.pt"
+        else:
+            ckpt_path = self.output_dir / f"checkpoint_epoch{epoch}.pt"
+
         torch.save(checkpoint, ckpt_path)
+
+        # Always save a "latest" checkpoint for easy resumption
+        latest_path = self.output_dir / "checkpoint_latest.pt"
+        torch.save(checkpoint, latest_path)
 
         # Save best checkpoint
         if is_best:

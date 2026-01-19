@@ -74,8 +74,8 @@ def load_brep_paths(data_root: Path, split: str):
 
 def load_brep_data(
     sample: dict,
-    max_faces: int = 64,
-    max_edges: int = 128,
+    max_faces: int = 192,
+    max_edges: int = 512,
     face_grid_size: int = 32,
     edge_curve_size: int = 32,
 ) -> dict:

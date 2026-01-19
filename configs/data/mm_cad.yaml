@@ -8,8 +8,8 @@ num_points: 10000         # 10K points for ULIP-2 Point-BERT
 point_channels: 6         # xyz + normals from PLY files
 
 # B-Rep settings
-max_faces: 64
-max_edges: 128
+max_faces: 192
+max_edges: 512
 face_grid_size: 32
 edge_curve_size: 32
 

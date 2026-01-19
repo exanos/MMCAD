@@ -24,9 +24,9 @@ We introduce **CLIP4CAD-GFA** (Grounded Feature Alignment), a cross-modal repres
 
 We consider three modalities for each CAD model:
 
-**Boundary Representation (B-Rep).** A B-Rep model consists of parametric surfaces $\mathcal{S} = \{S_i\}_{i=1}^{F}$, curves $\mathcal{C} = \{C_j\}_{j=1}^{E}$, and their topological connectivity $\mathcal{T}_{SC} \in \{0,1\}^{F \times E}$. Following Willis et al. [AutoBrep, 2025], we represent each face as a point grid $\mathbf{G}_i \in \mathbb{R}^{32 \times 32 \times 3}$ sampled uniformly in the parametric $(u,v)$ domain, and each edge as a point sequence $\mathbf{E}_j \in \mathbb{R}^{32 \times 3}$. These are encoded using a pre-trained Deep Compression Autoencoder to yield face tokens $\mathbf{z}_i^{\text{face}} \in \mathbb{R}^{d_f}$ and edge tokens $\mathbf{z}_j^{\text{edge}} \in \mathbb{R}^{d_e}$, where $d_f = 32$ and $d_e = 16$.
+**Boundary Representation (B-Rep).** A B-Rep model consists of parametric surfaces $\mathcal{S} = \{S_i\}_{i=1}^{F}$, curves $\mathcal{C} = \{C_j\}_{j=1}^{E}$, and their topological connectivity $\mathcal{T}_{SC} \in \{0,1\}^{F \times E}$. Following Willis et al. [AutoBrep, 2025], we represent each face as a point grid $\mathbf{G}_i \in \mathbb{R}^{32 \times 32 \times 3}$ sampled uniformly in the parametric $(u,v)$ domain, and each edge as a point sequence $\mathbf{E}_j \in \mathbb{R}^{32 \times 3}$. These are encoded using AutoBrep's FSQ VAE encoder to yield face tokens $\mathbf{z}_i^{\text{face}} \in \mathbb{R}^{d_f}$ and edge tokens $\mathbf{z}_j^{\text{edge}} \in \mathbb{R}^{d_e}$, where $d_f = 48$ and $d_e = 12$.
 
-**Point Cloud.** We sample $N = 8192$ points from the model surface and encode using Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pre-trained weights. The encoder performs farthest point sampling to select $M = 512$ seed points, groups $k = 32$ nearest neighbors per seed, and processes through a 12-layer transformer, yielding patch tokens $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times d_{\text{pc}}}$ where $d_{\text{pc}} = 384$.
+**Point Cloud.** We sample $N = 10000$ points with surface normals from the model and encode using Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pre-trained weights. The encoder performs farthest point sampling to select $M = 512$ seed points, groups $k = 32$ nearest neighbors per seed, and processes through a 12-layer transformer with 12 attention heads, yielding patch tokens $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times d_{\text{pc}}}$ where $d_{\text{pc}} = 768$.
 
 **Text Description.** Each model is paired with a natural language description $T$ that explicitly references geometric features (e.g., "A cylindrical mounting boss with a central through-hole and four corner mounting slots"). We encode using a frozen large language model (Phi-4-mini, 3.8B parameters) to obtain contextualized token embeddings $\mathbf{H}^{\text{text}} \in \mathbb{R}^{L \times d_{\text{llm}}}$ where $d_{\text{llm}} = 3072$.
 
@@ -87,7 +87,7 @@ The complete architecture comprises four stages, illustrated in Figure 1:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-All encoder features are **pre-computed and cached** to enable efficient training. Only the projection, grounding, alignment, and aggregation modules (approximately 2.5M parameters) are trained.
+All encoder features are **pre-computed and cached** to enable efficient training. Only the projection, grounding, alignment, and aggregation modules (approximately 3.1M parameters) are trained.
 
 ---
 
@@ -109,7 +109,7 @@ $$\mathbf{Z}^{\text{brep}} = [\mathbf{z}_1^{\text{face}} + \mathbf{e}_{\text{fac
 
 where $\mathbf{e}_{\text{face}}, \mathbf{e}_{\text{edge}} \in \mathbb{R}^{d_{\text{brep}}}$ are learned embeddings distinguishing faces from edges.
 
-**Padding and Masking.** B-Rep models have variable numbers of primitives. We pad to maximum sizes $F_{\max} = 64$, $E_{\max} = 128$ and maintain boolean masks $\mathbf{m}^{\text{brep}} \in \{0,1\}^{N_b}$ indicating valid tokens. Point cloud tokens have fixed count (513) and require no masking. Text tokens are padded to $L_{\max} = 512$ with mask $\mathbf{m}^{\text{text}}$.
+**Padding and Masking.** B-Rep models have variable numbers of primitives. We pad to maximum sizes $F_{\max} = 64$, $E_{\max} = 128$ (total $N_b = 192$ tokens) and maintain boolean masks $\mathbf{m}^{\text{brep}} \in \{0,1\}^{N_b}$ indicating valid tokens. Point cloud tokens have fixed count (513) and require no masking. Text description tokens are padded to $L_{\max} = 256$ with mask $\mathbf{m}^{\text{text}}$ (title tokens to 64).
 
 ---
 
@@ -119,7 +119,7 @@ CAD descriptions naturally decompose into mentions of distinct geometric feature
 
 ### 3.2.1 Feature Slot Queries
 
-We define $K = 8$ learnable query vectors $\mathbf{Q}^{\text{feat}} \in \mathbb{R}^{K \times d}$ with associated positional encodings $\mathbf{P}^{\text{feat}} \in \mathbb{R}^{K \times d}$, both initialized from $\mathcal{N}(0, 0.02^2)$.
+We define $K = 12$ learnable query vectors $\mathbf{Q}^{\text{feat}} \in \mathbb{R}^{K \times d}$ with associated positional encodings $\mathbf{P}^{\text{feat}} \in \mathbb{R}^{K \times d}$, both initialized from $\mathcal{N}(0, 0.02^2)$.
 
 The queries attend to the projected text tokens through a cross-attention block with $L_{\text{parse}} = 2$ layers:
 
@@ -481,9 +481,9 @@ The alignment layers $\text{AlignNet}_{\text{brep}}$ and $\text{AlignNet}_{\text
 
 ### 10.1 Pre-computation Pipeline
 
-**B-Rep Features.** We use the AutoBrep encoder [Willis et al., 2025] with publicly released weights trained on ABC-1M. For each face, we extract the 32-dimensional latent before FSQ quantization. For each edge, we extract the 16-dimensional latent. These are concatenated with learned type embeddings and stored as HDF5 files.
+**B-Rep Features.** We use the AutoBrep FSQ VAE encoder [Willis et al., 2025] with publicly released weights trained on ABC-1M. For each face, we extract the 48-dimensional latent (3 × 16 surfZ channels). For each edge, we extract the 12-dimensional latent (3 × 4 edgeZ channels). These are concatenated with learned type embeddings and stored as HDF5 files.
 
-**Point Cloud Features.** We use Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] weights. We extract all 513 patch token embeddings (512 patches + 1 CLS) at dimension 384 and store as HDF5 files.
+**Point Cloud Features.** We use Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] weights. We sample 10,000 points with normals (6 channels: xyz + normals) and extract all 513 patch token embeddings (512 patches + 1 CLS) at dimension 768 and store as HDF5 files.
 
 **Text Features.** We use Phi-4-mini (3.8B parameters) [Microsoft, 2024] with frozen weights. We store the full sequence of hidden states at the final layer, dimension 3072, for each description. This enables the trainable text parser to attend to any position.
 
@@ -491,16 +491,16 @@ The alignment layers $\text{AlignNet}_{\text{brep}}$ and $\text{AlignNet}_{\text
 
 | Component | Parameters | Trainable |
 |-----------|------------|-----------|
-| Unified projections | ~850K | Yes |
-| Text feature parser | ~400K | Yes |
+| Unified projections (B-Rep, PC, Text) | ~1.1M | Yes |
+| Text feature parser (2-layer cross-attn) | ~530K | Yes |
 | Confidence predictor | ~17K | Yes |
 | Grounding projections | ~65K | Yes |
-| Alignment networks | ~130K | Yes |
-| Global projection head | ~65K | Yes |
-| Self-grounding queries | ~2K | Yes |
-| **Total** | **~1.5M** | Yes |
+| Alignment networks (B-Rep, PC) | ~200K | Yes |
+| Projection heads (global, local) | ~130K | Yes |
+| Feature queries & self-grounding | ~6K | Yes |
+| **Total** | **~3.1M** | Yes |
 
-The model is extremely lightweight, enabling rapid iteration and training on consumer hardware.
+The model is extremely lightweight (~3M trainable parameters), enabling rapid iteration and training on consumer hardware.
 
 ### 10.3 Computational Requirements
 
@@ -535,8 +535,8 @@ We manually annotate 200 test samples with ground-truth correspondences between 
 
 We ablate each architectural component:
 1. Without grounding consistency loss
-2. Without grounding diversity loss  
-3. Without confidence weighting (fixed K=8)
+2. Without grounding diversity loss
+3. Without confidence weighting (fixed K=12)
 4. Without alignment layers (direct comparison)
 5. Without hard negative mining
 6. Without rotation augmentation
@@ -553,7 +553,7 @@ For test samples, we compute embeddings at multiple rotations and measure:
 
 **Limitation 1: Dependency on Description Quality.** Our approach relies on descriptions that explicitly mention geometric features. Vague descriptions ("a mechanical part") provide weak grounding signal. Future work could incorporate construction sequence information as an additional grounding source.
 
-**Limitation 2: Fixed Maximum Feature Slots.** While confidence weighting handles variable complexity, the maximum K=8 slots may be insufficient for highly complex parts with many distinct features. Adaptive slot allocation could address this.
+**Limitation 2: Fixed Maximum Feature Slots.** While confidence weighting handles variable complexity, the maximum K=12 slots may be insufficient for highly complex parts with many distinct features. Adaptive slot allocation could address this.
 
 **Limitation 3: No Topology Encoding.** Unlike HoLA, we do not explicitly encode B-Rep topology. The grounding mechanism implicitly captures some topological information (adjacent faces often share text mentions), but explicit topology encoding could improve performance on topology-sensitive tasks.
 
