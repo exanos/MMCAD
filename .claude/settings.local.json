@@ -3,7 +3,11 @@
     "allow": [
       "Bash(conda --version:*)",
       "Bash(nvidia-smi:*)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"\\(Get-Content ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\169k.csv''\\).Count\")",
+      "Bash(powershell -Command \"\\(Get-ChildItem ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\abc_ply_organized'' -Filter ''*.ply''\\).Count\")",
+      "Bash(powershell -Command \"\\(Get-ChildItem ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\extracted_step_files'' -Filter ''*.step''\\).Count\")"
     ]
   }
 }

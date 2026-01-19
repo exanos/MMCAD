@@ -90,5 +90,5 @@ encoders:
 # Reconstruction decoder (auxiliary regularization)
 reconstruction:
   enabled: true
-  max_faces: 64
-  max_edges: 128
+  max_faces: 192
+  max_edges: 512

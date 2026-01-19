@@ -374,8 +374,8 @@ class MMCADDataset(Dataset):
         data_root: str,
         split: str,
         tokenizer: Optional[Any] = None,
-        max_faces: int = 64,
-        max_edges: int = 128,
+        max_faces: int = 192,
+        max_edges: int = 512,
         num_points: int = 10000,  # 10K for ULIP-2 compatibility
         point_channels: int = 6,  # xyz + normals
         face_grid_size: int = 32,

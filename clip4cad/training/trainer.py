@@ -4,8 +4,15 @@ Training Pipeline for CLIP4CAD
 Two-stage training:
 - Stage 1: Global alignment + reconstruction
 - Stage 2: Add local contrastive alignment
+
+Features:
+- Frequent checkpointing (configurable)
+- GPU memory management (cache clearing after each epoch)
+- Gradient checkpointing support for reduced memory usage
+- Mixed precision training with automatic scaling
 """
 
+import gc
 import time
 from pathlib import Path
 from typing import Dict, Optional, Any
@@ -113,6 +120,13 @@ class CLIP4CADTrainer:
         print(f"Starting training for {self.epochs} epochs")
         print(f"Stage 1 (global + recon): epochs 1-{self.stage1_epochs}")
         print(f"Stage 2 (+ local): epochs {self.stage1_epochs + 1}-{self.epochs}")
+        print(f"Checkpoint every: {self.save_every} epochs")
+
+        # Enable gradient checkpointing if requested
+        if self.config.get("gradient_checkpointing", False):
+            if hasattr(self.model, 'enable_gradient_checkpointing'):
+                self.model.enable_gradient_checkpointing()
+                print("Gradient checkpointing enabled")
 
         for epoch in range(self.current_epoch, self.epochs):
             self.current_epoch = epoch
@@ -129,6 +143,11 @@ class CLIP4CADTrainer:
 
             # Update scheduler
             self.scheduler.step()
+
+            # Clear GPU cache after each epoch to prevent memory fragmentation
+            if self.config.get("empty_cache_every_epoch", True) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
 
             # Validation
             val_metrics = None
@@ -256,6 +275,20 @@ class CLIP4CADTrainer:
             config=self.config,
             save_path=save_path,
             is_best=is_best,
+        )
+
+        # Always save a "latest" checkpoint for easy resumption
+        latest_path = self.output_dir / "checkpoints" / "latest.pt"
+        save_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            epoch=self.current_epoch,
+            step=self.global_step,
+            metrics={"best_val_loss": self.best_val_loss},
+            config=self.config,
+            save_path=latest_path,
+            is_best=False,
         )
 
     def load_checkpoint(self, checkpoint_path: str):
