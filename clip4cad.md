@@ -1,540 +1,576 @@
+# CLIP4CAD-GFA: Cross-Modal Representation Learning for CAD Models via Grounded Feature Alignment
 
-# CLIP4CAD-H: Technical Architecture Specification
+## Technical Architecture Specification
 
-## 1. Problem Statement and Motivation
+---
 
-We aim to learn a unified embedding space for CAD models where representations from different modalities—B-Rep, point cloud, and natural language—can be directly compared. Given a CAD model, we have access to:
+## 1. Introduction and Problem Formulation
 
-- **B-Rep representation**: Parametric surfaces $\mathcal{S} = \{S_i\}_{i=1}^{F}$, curves $\mathcal{C} = \{C_j\}_{j=1}^{E}$, and topology $\mathcal{T}_{SC} \in \{0,1\}^{F \times E}$
-- **Point cloud**: $\mathcal{P} \in \mathbb{R}^{N \times 3}$ sampled from the model surface
-- **Hierarchical text**: A concise title $T_{\text{title}}$ and detailed description $T_{\text{desc}}$
+Computer-Aided Design (CAD) models serve as the digital foundation of modern manufacturing, encoding precise geometric and topological information through boundary representations (B-Rep). The challenge of learning unified representations that enable cross-modal retrieval between CAD geometry and natural language descriptions remains largely unexplored. Unlike general 3D object understanding, CAD-specific multimodal learning presents unique challenges: (1) descriptions explicitly reference geometric features ("central through-hole", "corner fillets") that correspond to specific B-Rep primitives, (2) multiple geometric representations (B-Rep, point cloud) encode the same underlying shape with different structural biases, and (3) industrial CAD models appear in arbitrary orientations, requiring rotation-robust representations.
 
-The key challenges we address:
+We introduce **CLIP4CAD-GFA** (Grounded Feature Alignment), a cross-modal representation learning framework that addresses these challenges through three key innovations:
 
-1. **Information asymmetry**: Text descriptions are sequential and constructive ("a cylinder with two holes"), while geometric representations present complete 3D structure simultaneously. Standard CLIP-style alignment may learn superficial correlations rather than geometric understanding.
+1. **Explicit Grounding Learning**: Rather than aligning only global embeddings, we learn a grounding matrix that maps text feature mentions to their corresponding geometric primitives.
 
-2. **Granularity mismatch**: Titles describe global shape ("hexagonal bracket"), while descriptions enumerate local features ("four corner fillets, central through-hole"). A single embedding level cannot capture both.
+2. **Cross-Modal Grounding Consistency**: We enforce that the same text mention should ground to geometrically corresponding regions across different shape representations (B-Rep and point cloud).
 
-3. **Rotation sensitivity**: CAD models in datasets appear in arbitrary orientations. Semantically identical models oriented differently should produce similar embeddings.
+3. **Adaptive Feature Slot Utilization**: We handle variable-complexity descriptions through confidence-weighted feature slots that naturally adapt to the number of distinct features mentioned.
 
-## 2. Architecture Overview
+---
 
-Our architecture processes each modality through three stages:
+## 2. Preliminaries and Notation
+
+### 2.1 Input Representations
+
+We consider three modalities for each CAD model:
+
+**Boundary Representation (B-Rep).** A B-Rep model consists of parametric surfaces $\mathcal{S} = \{S_i\}_{i=1}^{F}$, curves $\mathcal{C} = \{C_j\}_{j=1}^{E}$, and their topological connectivity $\mathcal{T}_{SC} \in \{0,1\}^{F \times E}$. Following Willis et al. [AutoBrep, 2025], we represent each face as a point grid $\mathbf{G}_i \in \mathbb{R}^{32 \times 32 \times 3}$ sampled uniformly in the parametric $(u,v)$ domain, and each edge as a point sequence $\mathbf{E}_j \in \mathbb{R}^{32 \times 3}$. These are encoded using a pre-trained Deep Compression Autoencoder to yield face tokens $\mathbf{z}_i^{\text{face}} \in \mathbb{R}^{d_f}$ and edge tokens $\mathbf{z}_j^{\text{edge}} \in \mathbb{R}^{d_e}$, where $d_f = 32$ and $d_e = 16$.
+
+**Point Cloud.** We sample $N = 8192$ points from the model surface and encode using Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pre-trained weights. The encoder performs farthest point sampling to select $M = 512$ seed points, groups $k = 32$ nearest neighbors per seed, and processes through a 12-layer transformer, yielding patch tokens $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times d_{\text{pc}}}$ where $d_{\text{pc}} = 384$.
+
+**Text Description.** Each model is paired with a natural language description $T$ that explicitly references geometric features (e.g., "A cylindrical mounting boss with a central through-hole and four corner mounting slots"). We encode using a frozen large language model (Phi-4-mini, 3.8B parameters) to obtain contextualized token embeddings $\mathbf{H}^{\text{text}} \in \mathbb{R}^{L \times d_{\text{llm}}}$ where $d_{\text{llm}} = 3072$.
+
+### 2.2 Design Rationale
+
+A key observation motivating our approach is that CAD descriptions differ fundamentally from general object descriptions. When describing a mechanical part, engineers enumerate specific geometric features: "four corner holes", "central slot", "filleted edges". Each such mention corresponds to identifiable B-Rep primitives (the hole faces, the slot faces, the fillet faces). Standard CLIP-style alignment, which only matches global embeddings, discards this rich correspondence signal. Our architecture explicitly learns and leverages these correspondences.
+
+---
+
+## 3. Architecture Overview
+
+The complete architecture comprises four stages, illustrated in Figure 1:
 
 ```
-Input → Pretrained Encoder → Unified Projection → Hierarchical Compression → Output Embeddings
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           CLIP4CAD-GFA Architecture                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐                    │
+│  │   B-Rep      │   │  Point Cloud │   │    Text      │                    │
+│  │  (Pre-comp)  │   │  (Pre-comp)  │   │  (Pre-comp)  │                    │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘                    │
+│         │                  │                  │                             │
+│         ▼                  ▼                  ▼                             │
+│  ┌──────────────────────────────────────────────────────┐                  │
+│  │           Unified Projection Layer (§3.1)            │                  │
+│  │     X_brep ∈ R^{N_b×d}    X_pc ∈ R^{513×d}    X_text ∈ R^{L×d}         │
+│  └──────────────────────────────────────────────────────┘                  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌──────────────────────────────────────────────────────┐                  │
+│  │         Adaptive Text Feature Parsing (§3.2)         │                  │
+│  │    K learnable queries → K feature slots + confidence │                  │
+│  │              T_feat ∈ R^{K×d}, c ∈ (0,1)^K           │                  │
+│  └──────────────────────────────────────────────────────┘                  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌──────────────────────────────────────────────────────┐                  │
+│  │      Bi-directional Grounding Module (§3.3)          │                  │
+│  │         G_brep ∈ R^{K×N_b}    G_pc ∈ R^{K×513}       │                  │
+│  │    Grounded features: F_brep, F_pc ∈ R^{K×d}         │                  │
+│  └──────────────────────────────────────────────────────┘                  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌──────────────────────────────────────────────────────┐                  │
+│  │      Cross-Modal Alignment Module (§3.4)             │                  │
+│  │    Learned alignment: F_brep → F̃_brep, F_pc → F̃_pc  │                  │
+│  │         Grounding consistency in aligned space        │                  │
+│  └──────────────────────────────────────────────────────┘                  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌──────────────────────────────────────────────────────┐                  │
+│  │      Global Aggregation & Projection (§3.5)          │                  │
+│  │    Semantic importance weighting → global embeddings  │                  │
+│  │         z_brep, z_pc, z_text ∈ R^{d_proj}            │                  │
+│  └──────────────────────────────────────────────────────┘                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The hierarchical compression module is shared across geometric modalities and produces:
-- **Global features** $\mathbf{F}_g \in \mathbb{R}^{N_g \times d}$: Coarse structural information
-- **Detail features** $\mathbf{F}_d \in \mathbb{R}^{N_d \times d}$: Fine-grained local information
+All encoder features are **pre-computed and cached** to enable efficient training. Only the projection, grounding, alignment, and aggregation modules (approximately 2.5M parameters) are trained.
 
-Text is processed through a parallel hierarchical encoder producing:
-- **Title embedding** $\mathbf{t}_g \in \mathbb{R}^{d}$: Global semantic embedding
-- **Feature embeddings** $\mathbf{T}_d \in \mathbb{R}^{N_d \times d}$: Local feature mentions
+---
 
-Training aligns global geometric features with title embeddings, and detail features with description feature embeddings.
+## 3.1 Unified Projection Layer
 
-## 3. Modality-Specific Encoders
+The pre-computed encoder features have heterogeneous dimensions. We project all modalities to a common dimension $d = 256$ using learned linear projections with layer normalization:
 
-### 3.1 B-Rep Encoder
+$$\mathbf{X}^{\text{brep}} = \text{LayerNorm}(\mathbf{Z}^{\text{brep}} \mathbf{W}_{\text{brep}} + \mathbf{b}_{\text{brep}}) \in \mathbb{R}^{N_b \times d}$$
 
-We adopt the encoding scheme from AutoBrep [Willis et al., 2025], which represents B-Rep primitives as point grids sampled uniformly in the parametric domain.
+$$\mathbf{X}^{\text{pc}} = \text{LayerNorm}(\mathbf{Z}^{\text{pc}} \mathbf{W}_{\text{pc}} + \mathbf{b}_{\text{pc}}) \in \mathbb{R}^{513 \times d}$$
 
-**Face representation.** Each face $S_i$ is sampled on a $32 \times 32$ grid in the $(u, v)$ parameter domain:
+$$\mathbf{X}^{\text{text}} = \text{LayerNorm}(\mathbf{H}^{\text{text}} \mathbf{W}_{\text{text}} + \mathbf{b}_{\text{text}}) \in \mathbb{R}^{L \times d}$$
 
-$$\mathbf{G}_i[u, v] = S_i\left(u_{\min} + \frac{u}{31}(u_{\max} - u_{\min}), \; v_{\min} + \frac{v}{31}(v_{\max} - v_{\min})\right)$$
+where $\mathbf{W}_{\text{brep}} \in \mathbb{R}^{d_{\text{brep}} \times d}$, $\mathbf{W}_{\text{pc}} \in \mathbb{R}^{d_{\text{pc}} \times d}$, and $\mathbf{W}_{\text{text}} \in \mathbb{R}^{d_{\text{llm}} \times d}$ are learned projection matrices.
 
-for $u, v \in \{0, 1, \ldots, 31\}$, yielding $\mathbf{G}_i \in \mathbb{R}^{32 \times 32 \times 3}$.
+For B-Rep, we concatenate face and edge tokens with learned type embeddings:
 
-**Edge representation.** Each edge $C_j$ is sampled at 32 uniform points along its parameter domain, yielding $\mathbf{E}_j \in \mathbb{R}^{32 \times 3}$.
+$$\mathbf{Z}^{\text{brep}} = [\mathbf{z}_1^{\text{face}} + \mathbf{e}_{\text{face}}; \ldots; \mathbf{z}_F^{\text{face}} + \mathbf{e}_{\text{face}}; \mathbf{z}_1^{\text{edge}} + \mathbf{e}_{\text{edge}}; \ldots; \mathbf{z}_E^{\text{edge}} + \mathbf{e}_{\text{edge}}]$$
 
-**Normalization.** Following AutoBrep, we apply:
-1. **UV-origin normalization**: Rotate/flip the grid so the lexicographically smallest corner point is at index $(0, 0)$
-2. **Bounding box normalization**: Scale each grid independently to $[-1, 1]^3$
+where $\mathbf{e}_{\text{face}}, \mathbf{e}_{\text{edge}} \in \mathbb{R}^{d_{\text{brep}}}$ are learned embeddings distinguishing faces from edges.
 
-**Encoder architecture.** We use the Deep Compression Autoencoder architecture from AutoBrep:
+**Padding and Masking.** B-Rep models have variable numbers of primitives. We pad to maximum sizes $F_{\max} = 64$, $E_{\max} = 128$ and maintain boolean masks $\mathbf{m}^{\text{brep}} \in \{0,1\}^{N_b}$ indicating valid tokens. Point cloud tokens have fixed count (513) and require no masking. Text tokens are padded to $L_{\max} = 512$ with mask $\mathbf{m}^{\text{text}}$.
 
-*Face encoder* $\mathcal{E}_{\text{face}}: \mathbb{R}^{32 \times 32 \times 3} \rightarrow \mathbb{R}^{d_f}$:
-```
-Conv2d(3→32, k=4, s=2, p=1) → GroupNorm → GELU    # 32×32 → 16×16
-Conv2d(32→64, k=4, s=2, p=1) → GroupNorm → GELU   # 16×16 → 8×8
-Conv2d(64→128, k=4, s=2, p=1) → GroupNorm → GELU  # 8×8 → 4×4
-Conv2d(128→8, k=4, s=2, p=1)                       # 4×4 → 2×2
-Flatten                                            # 2×2×8 → 32
-```
+---
 
-Output dimension: $d_f = 32$.
+## 3.2 Adaptive Text Feature Parsing
 
-*Edge encoder* $\mathcal{E}_{\text{edge}}: \mathbb{R}^{32 \times 3} \rightarrow \mathbb{R}^{d_e}$:
-```
-Conv1d(3→32, k=4, s=2, p=1) → GroupNorm → GELU    # 32 → 16
-Conv1d(32→64, k=4, s=2, p=1) → GroupNorm → GELU   # 16 → 8
-Conv1d(64→128, k=4, s=2, p=1) → GroupNorm → GELU  # 8 → 4
-Conv1d(128→8, k=4, s=2, p=1)                       # 4 → 2
-Flatten                                            # 2×8 → 16
-```
+CAD descriptions naturally decompose into mentions of distinct geometric features. Rather than treating the description as a single embedding, we introduce $K$ learnable **feature slot queries** that attend to the text and extract distinct feature mentions. Critically, we predict a **confidence score** for each slot indicating whether it found meaningful content, enabling adaptive utilization based on description complexity.
 
-Output dimension: $d_e = 16$.
+### 3.2.1 Feature Slot Queries
 
-**Note on pretrained weights.** AutoBrep releases pretrained encoder weights trained on ABC-1M with reconstruction + FSQ quantization objectives. We use the encoder portion and extract continuous features before the FSQ layer. If pretrained weights are unavailable, we initialize randomly and rely on our training objectives.
+We define $K = 8$ learnable query vectors $\mathbf{Q}^{\text{feat}} \in \mathbb{R}^{K \times d}$ with associated positional encodings $\mathbf{P}^{\text{feat}} \in \mathbb{R}^{K \times d}$, both initialized from $\mathcal{N}(0, 0.02^2)$.
 
-**Output.** For a B-Rep model with $F$ faces and $E$ edges:
+The queries attend to the projected text tokens through a cross-attention block with $L_{\text{parse}} = 2$ layers:
 
-$$\mathbf{Z}^{\text{face}} = [\mathcal{E}_{\text{face}}(\mathbf{G}_1); \ldots; \mathcal{E}_{\text{face}}(\mathbf{G}_F)] \in \mathbb{R}^{F \times 32}$$
-$$\mathbf{Z}^{\text{edge}} = [\mathcal{E}_{\text{edge}}(\mathbf{E}_1); \ldots; \mathcal{E}_{\text{edge}}(\mathbf{E}_E)] \in \mathbb{R}^{E \times 16}$$
+$$\mathbf{T}^{\text{feat}} = \text{CrossAttnBlock}(\mathbf{Q}^{\text{feat}} + \mathbf{P}^{\text{feat}}, \mathbf{X}^{\text{text}}, \mathbf{X}^{\text{text}}; \mathbf{m}^{\text{text}}) \in \mathbb{R}^{K \times d}$$
 
-### 3.2 Point Cloud Encoder
+Each cross-attention layer follows the pre-norm transformer architecture [Xiong et al., 2020]:
 
-We use Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pretrained weights.
+$$\hat{\mathbf{Q}}^{(l)} = \text{LayerNorm}(\mathbf{Q}^{(l-1)})$$
+$$\mathbf{Q}^{(l)} = \mathbf{Q}^{(l-1)} + \text{MHA}(\hat{\mathbf{Q}}^{(l)}, \text{LayerNorm}(\mathbf{X}^{\text{text}}), \mathbf{X}^{\text{text}}; \mathbf{m}^{\text{text}})$$
+$$\mathbf{Q}^{(l)} = \mathbf{Q}^{(l)} + \text{FFN}(\text{LayerNorm}(\mathbf{Q}^{(l)}))$$
 
-**Tokenization.** The point cloud $\mathcal{P} \in \mathbb{R}^{N \times 3}$ (we use $N = 2048$) is processed as:
+where MHA denotes multi-head attention with $H = 8$ heads, and FFN is a two-layer feed-forward network with GELU activation and expansion factor 4.
 
-1. **Farthest Point Sampling**: Select $M = 512$ seed points
-2. **KNN Grouping**: For each seed, group $k = 32$ nearest neighbors
-3. **Local encoding**: Each group is encoded by a mini-PointNet (shared MLP + max pooling)
+### 3.2.2 Confidence Prediction
 
-This produces $M = 512$ group tokens plus one prepended CLS token.
+Not all descriptions mention $K$ distinct features. A simple description like "rectangular plate" activates perhaps one or two meaningful feature slots, while "mounting bracket with four corner holes, central boss, and filleted edges" activates more. To handle this variability, we predict a confidence score $c_k \in (0, 1)$ for each feature slot:
 
-**Transformer encoding.** The tokens pass through a 12-layer transformer with:
-- Hidden dimension: 384
-- Attention heads: 6
-- FFN dimension: 1536
+$$c_k = \sigma\left(\mathbf{w}_c^\top \text{GELU}(\mathbf{W}_c \mathbf{t}_k^{\text{feat}} + \mathbf{b}_c) + b_c'\right)$$
 
-**Output.** $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times 384}$ (including CLS token).
+where $\mathbf{W}_c \in \mathbb{R}^{(d/4) \times d}$, $\mathbf{w}_c \in \mathbb{R}^{d/4}$, and $\sigma$ is the sigmoid function.
 
-**Note.** Point-BERT operates on raw XYZ coordinates. The ULIP-2 weights were trained with image-language supervision, providing semantically meaningful features without CAD-specific fine-tuning.
+The confidence scores serve three purposes:
+1. **Loss weighting**: Low-confidence slots contribute less to grounding losses
+2. **Aggregation weighting**: Global embeddings weight feature slots by confidence  
+3. **Interpretability**: Confidence indicates how many distinct features the model detected
 
-### 3.3 Text Encoder
+We collect the confidence scores as $\mathbf{c} = [c_1, \ldots, c_K]^\top \in (0, 1)^K$.
 
-We use a pretrained LLM (Phi-4-mini 3.8B or Qwen2.5-3B) with frozen weights.
+---
 
-**Title encoding.** The title $T_{\text{title}}$ is tokenized and encoded:
+## 3.3 Bi-directional Grounding Module
 
-$$\mathbf{H}^{\text{title}} = \text{LLM}(T_{\text{title}}) \in \mathbb{R}^{L_t \times d_{\text{LLM}}}$$
+The core novelty of our architecture is the **grounding matrix** $\mathbf{G} \in \mathbb{R}^{K \times N}$ that explicitly maps each text feature slot to its corresponding geometric tokens. Unlike attention mechanisms used for compression [Chen et al., HCC-CAD, 2024], our grounding is specifically designed for cross-modal correspondence and is supervised by semantic consistency objectives.
 
-where $d_{\text{LLM}} = 3072$ for Phi-4-mini. Since these LLMs use causal attention, we take the **last non-padding token's hidden state** as the sequence representation:
+### 3.3.1 Grounding Space Projection
 
-$$\mathbf{h}^{\text{title}} = \mathbf{H}^{\text{title}}[\text{last\_token\_idx}] \in \mathbb{R}^{d_{\text{LLM}}}$$
+To compute grounding, we project text feature slots and geometric tokens into a shared **grounding space** of dimension $d_g = 128$:
 
-**Description encoding.** The description $T_{\text{desc}}$ is similarly encoded:
+$$\mathbf{T}^g = \mathbf{T}^{\text{feat}} \mathbf{W}_g^{\text{text}} \in \mathbb{R}^{K \times d_g}$$
+$$\mathbf{X}^g_{\text{brep}} = \mathbf{X}^{\text{brep}} \mathbf{W}_g^{\text{geo}} \in \mathbb{R}^{N_b \times d_g}$$
+$$\mathbf{X}^g_{\text{pc}} = \mathbf{X}^{\text{pc}} \mathbf{W}_g^{\text{geo}} \in \mathbb{R}^{513 \times d_g}$$
 
-$$\mathbf{H}^{\text{desc}} = \text{LLM}(T_{\text{desc}}) \in \mathbb{R}^{L_d \times d_{\text{LLM}}}$$
+Note that B-Rep and point cloud share the same geometric projection $\mathbf{W}_g^{\text{geo}}$, encouraging a unified grounding space for geometry.
 
-We project to the unified dimension:
+### 3.3.2 Grounding Matrix Computation
 
-$$\tilde{\mathbf{H}}^{\text{desc}} = \mathbf{H}^{\text{desc}} \mathbf{W}_{\text{proj}} \in \mathbb{R}^{L_d \times d}$$
+The grounding matrix is computed as temperature-scaled softmax attention over geometric tokens:
 
-where $\mathbf{W}_{\text{proj}} \in \mathbb{R}^{d_{\text{LLM}} \times d}$.
+$$\mathbf{G}^{\text{brep}}_{k,n} = \frac{\exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_n^{g,\text{brep}} / (\sqrt{d_g} \cdot \tau_g)\right) \cdot m_n^{\text{brep}}}{\sum_{n'} \exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_{n'}^{g,\text{brep}} / (\sqrt{d_g} \cdot \tau_g)\right) \cdot m_{n'}^{\text{brep}}}$$
 
-## 4. Unified Input Projection
+where $\tau_g$ is a learnable temperature parameter initialized to 0.1 and clamped to $[0.01, 1.0]$.
 
-All modality encoders produce different output dimensions. We project to a common dimension $d = 256$.
+Similarly for point cloud:
 
-**B-Rep projection:**
+$$\mathbf{G}^{\text{pc}}_{k,n} = \frac{\exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_n^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}{\sum_{n'} \exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_{n'}^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}$$
 
-$$\tilde{\mathbf{Z}}^{\text{face}} = \text{LayerNorm}(\mathbf{Z}^{\text{face}} \mathbf{W}_f + \mathbf{b}_f) \in \mathbb{R}^{F \times d}$$
-$$\tilde{\mathbf{Z}}^{\text{edge}} = \text{LayerNorm}(\mathbf{Z}^{\text{edge}} \mathbf{W}_e + \mathbf{b}_e) \in \mathbb{R}^{E \times d}$$
+The grounding matrix $\mathbf{G}_{k,:}$ forms a probability distribution over geometric tokens, indicating which regions correspond to feature mention $k$.
 
-where $\mathbf{W}_f \in \mathbb{R}^{32 \times d}$, $\mathbf{W}_e \in \mathbb{R}^{16 \times d}$.
+### 3.3.3 Grounded Feature Extraction
 
-We concatenate and add modality embeddings:
+Using the grounding matrices, we extract grounded geometric features for each feature slot:
 
-$$\mathbf{X}^{\text{brep}} = [\tilde{\mathbf{Z}}^{\text{face}}; \tilde{\mathbf{Z}}^{\text{edge}}] + \mathbf{e}_{\text{brep}} \in \mathbb{R}^{(F+E) \times d}$$
+$$\mathbf{F}^{\text{brep}}_k = \sum_n \mathbf{G}^{\text{brep}}_{k,n} \cdot \mathbf{x}_n^{\text{brep}} \in \mathbb{R}^d$$
+$$\mathbf{F}^{\text{pc}}_k = \sum_n \mathbf{G}^{\text{pc}}_{k,n} \cdot \mathbf{x}_n^{\text{pc}} \in \mathbb{R}^d$$
 
-**Point cloud projection:**
+These grounded features capture the geometric information corresponding to each text feature mention. For a slot attending to "central through-hole", $\mathbf{F}^{\text{brep}}_k$ aggregates the hole face representations while $\mathbf{F}^{\text{pc}}_k$ aggregates the corresponding point cloud patches.
 
-$$\mathbf{X}^{\text{pc}} = \text{LayerNorm}(\mathbf{Z}^{\text{pc}} \mathbf{W}_p + \mathbf{b}_p) + \mathbf{e}_{\text{pc}} \in \mathbb{R}^{513 \times d}$$
+We also create fused multimodal features by combining grounded geometry with text:
 
-where $\mathbf{W}_p \in \mathbb{R}^{384 \times d}$.
+$$\tilde{\mathbf{F}}^{\text{brep}}_k = \text{LayerNorm}(\mathbf{F}^{\text{brep}}_k + \mathbf{t}_k^{\text{feat}})$$
+$$\tilde{\mathbf{F}}^{\text{pc}}_k = \text{LayerNorm}(\mathbf{F}^{\text{pc}}_k + \mathbf{t}_k^{\text{feat}})$$
 
-**Padding and masking.** B-Rep models have variable numbers of faces and edges. We pad to maximum sizes $F_{\max} = 64$, $E_{\max} = 128$ and maintain boolean masks $\mathbf{m}^{\text{face}} \in \{0,1\}^{F_{\max}}$, $\mathbf{m}^{\text{edge}} \in \{0,1\}^{E_{\max}}$ indicating valid (non-padding) tokens.
+---
 
-## 5. Hierarchical Compression Module
+## 3.4 Cross-Modal Alignment Module
 
-This is the core contribution. The module compresses variable-length token sequences into fixed-size representations with explicit global-local structure.
+A critical challenge is that B-Rep and point cloud encoders produce fundamentally different representations. AutoBrep encodes parametric surfaces with UV-grid structure, while Point-BERT encodes local point patches with neighborhood context. The same geometric region (e.g., a fillet face) may have quite different encoder representations in each modality.
 
-### 5.1 Global Structure Compression (GSC)
+To address this, we introduce **learned modality-specific alignment layers** that project grounded features into a shared comparison space before computing consistency losses.
 
-We define $N_g = 8$ learnable query vectors $\mathbf{Q}_g \in \mathbb{R}^{N_g \times d}$ that will learn to capture global shape structure.
+### 3.4.1 Alignment Projection
 
-**Initialization.** Both queries and their positional encodings are initialized from $\mathcal{N}(0, 0.02^2)$:
+Each geometric modality has a dedicated alignment network:
 
-$$\mathbf{Q}_g^{(0)} \sim \mathcal{N}(0, 0.02^2), \quad \mathbf{P}_g \sim \mathcal{N}(0, 0.02^2)$$
+$$\hat{\mathbf{F}}^{\text{brep}}_k = \text{AlignNet}_{\text{brep}}(\mathbf{F}^{\text{brep}}_k) \in \mathbb{R}^{d_a}$$
+$$\hat{\mathbf{F}}^{\text{pc}}_k = \text{AlignNet}_{\text{pc}}(\mathbf{F}^{\text{pc}}_k) \in \mathbb{R}^{d_a}$$
 
-**Cross-attention layers.** We apply $L = 2$ cross-attention layers. For layer $l$:
+where $d_a = 128$ and each AlignNet is a two-layer MLP:
 
-$$\hat{\mathbf{Q}}_g^{(l-1)} = \text{LayerNorm}(\mathbf{Q}_g^{(l-1)})$$
-$$\hat{\mathbf{X}} = \text{LayerNorm}(\mathbf{X})$$
+$$\text{AlignNet}(\mathbf{x}) = \mathbf{W}_2 \cdot \text{GELU}(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1) + \mathbf{b}_2$$
 
-Multi-head attention with $H = 8$ heads:
+with $\mathbf{W}_1 \in \mathbb{R}^{d \times d}$, $\mathbf{W}_2 \in \mathbb{R}^{d \times d_a}$.
 
-$$\text{head}_h = \text{Attention}(\hat{\mathbf{Q}}_g^{(l-1)} \mathbf{W}_Q^h, \; \hat{\mathbf{X}} \mathbf{W}_K^h, \; \mathbf{X} \mathbf{W}_V^h; \; \mathbf{m})$$
+### 3.4.2 Rationale
 
-where $\mathbf{W}_Q^h, \mathbf{W}_K^h, \mathbf{W}_V^h \in \mathbb{R}^{d \times (d/H)}$ and $\mathbf{m}$ is the padding mask.
+The alignment layers serve a crucial role: they allow the model to learn the mapping between encoder representation spaces rather than assuming direct comparability. This is analogous to the projection heads used in contrastive learning [Chen et al., SimCLR, 2020], where representations are projected before computing the contrastive loss, allowing the encoder to retain information that may not be directly comparable but is useful for the representation.
 
-The attention operation is:
+---
 
-$$\text{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}; \mathbf{m}) = \text{softmax}\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d/H}} + \mathbf{M}\right)\mathbf{V}$$
+## 3.5 Semantic Importance and Global Aggregation
 
-where $\mathbf{M}_{ij} = -\infty$ if token $j$ is padding (i.e., $m_j = 0$), else $0$.
+For retrieval tasks, we require single vector embeddings per modality. We compute these through **semantic importance weighting**, where geometric tokens are weighted by how strongly they are grounded in text.
 
-Concatenate heads and project:
+### 3.5.1 Semantic Importance Scores
 
-$$\text{MHA}(\mathbf{Q}, \mathbf{X}; \mathbf{m}) = \text{Concat}(\text{head}_1, \ldots, \text{head}_H) \mathbf{W}_O$$
+For each geometric token, we compute its semantic importance as the total grounding attention it receives, weighted by feature slot confidence:
 
-Update with residual connection:
+$$\text{imp}_n^{\text{brep}} = \sum_{k=1}^{K} c_k \cdot \mathbf{G}^{\text{brep}}_{k,n}$$
 
-$$\mathbf{Q}_g^{(l)} = \mathbf{Q}_g^{(l-1)} + \text{MHA}(\hat{\mathbf{Q}}_g^{(l-1)}, \hat{\mathbf{X}}; \mathbf{m})$$
+This differs from attention-coverage-based importance [Chen et al., HCC-CAD, 2024] in a fundamental way: we weight by **semantic grounding** (what the text mentions) rather than **statistical coverage** (what the global queries attended to). Tokens corresponding to mentioned features receive high importance; background regions receive low importance.
 
-Apply feed-forward network:
+We normalize to obtain a probability distribution:
 
-$$\mathbf{Q}_g^{(l)} = \mathbf{Q}_g^{(l)} + \text{FFN}(\text{LayerNorm}(\mathbf{Q}_g^{(l)}))$$
+$$\bar{\text{imp}}_n^{\text{brep}} = \frac{\text{imp}_n^{\text{brep}} \cdot m_n^{\text{brep}}}{\sum_{n'} \text{imp}_{n'}^{\text{brep}} \cdot m_{n'}^{\text{brep}}}$$
 
-where $\text{FFN}(\mathbf{x}) = \text{GELU}(\mathbf{x}\mathbf{W}_1 + \mathbf{b}_1)\mathbf{W}_2 + \mathbf{b}_2$ with $\mathbf{W}_1 \in \mathbb{R}^{d \times 4d}$, $\mathbf{W}_2 \in \mathbb{R}^{4d \times d}$.
+### 3.5.2 Global Embedding Computation
 
-**Output.** After $L$ layers: $\mathbf{F}_g = \mathbf{Q}_g^{(L)} \in \mathbb{R}^{N_g \times d}$.
+The global geometric embedding is the importance-weighted average of projected tokens:
 
-**Attention weight extraction.** During the forward pass, we store the attention weights from each layer and head:
+$$\mathbf{z}^{\text{brep}}_{\text{geo}} = \sum_n \bar{\text{imp}}_n^{\text{brep}} \cdot \mathbf{x}_n^{\text{brep}} \in \mathbb{R}^d$$
 
-$$\boldsymbol{\alpha}^{(l,h)} \in \mathbb{R}^{N_g \times M}$$
+For text, we use confidence-weighted averaging of feature slots:
 
-where $M$ is the input sequence length. These are used for adaptive detail mining.
+$$\mathbf{z}^{\text{text}} = \frac{\sum_k c_k \cdot \mathbf{t}_k^{\text{feat}}}{\sum_k c_k} \in \mathbb{R}^d$$
 
-### 5.2 Adaptive Detail Mining (ADM)
+### 3.5.3 Contrastive Projection Head
 
-The global queries may not adequately attend to fine-grained features. ADM identifies important but under-attended regions.
+Following standard practice [Radford et al., CLIP, 2021], we project global embeddings through a learned head before computing contrastive losses:
 
-**Coverage computation.** For each input token $i$, we compute how strongly it was attended to by the global queries. We use the **maximum** attention weight across all layers, heads, and queries:
+$$\mathbf{z}^{\text{brep}}_{\text{proj}} = \text{ProjHead}(\mathbf{z}^{\text{brep}}_{\text{geo}}) \in \mathbb{R}^{d_{\text{proj}}}$$
 
-$$A_i^{\text{cov}} = \max_{l \in [L], h \in [H], j \in [N_g]} \alpha_{j,i}^{(l,h)}$$
+where $d_{\text{proj}} = 128$ and ProjHead is a two-layer MLP with GELU activation.
 
-This measures whether *any* global query strongly attended to token $i$. Using max (rather than sum) avoids the normalization issues with summing softmax outputs.
+---
 
-**Importance prediction.** We predict the intrinsic importance of each token using a learned MLP:
+## 4. Training Objectives
 
-$$I_i = \sigma\left(\mathbf{w}_2^\top \text{GELU}(\mathbf{W}_1 \mathbf{x}_i + \mathbf{b}_1) + b_2\right)$$
+Our training combines four complementary objectives that together supervise both fine-grained grounding and global alignment.
 
-where $\mathbf{W}_1 \in \mathbb{R}^{(d/4) \times d}$, $\mathbf{w}_2 \in \mathbb{R}^{d/4}$, and $\sigma$ is the sigmoid function. Output: $I_i \in (0, 1)$.
+### 4.1 Grounding Consistency Loss (Novel)
 
-**Complementary score.** We identify tokens that are important but under-covered:
+The central novel objective enforces that the same text feature mention should ground to geometrically corresponding regions across modalities. We compute this in the aligned space:
 
-$$S_i^c = I_i \cdot (1 - A_i^{\text{cov}})$$
+$$\mathcal{L}_{\text{consist}} = \frac{1}{|\mathcal{K}_{\text{active}}|} \sum_{k \in \mathcal{K}_{\text{active}}} \left(1 - \frac{\hat{\mathbf{F}}^{\text{brep}}_k \cdot \hat{\mathbf{F}}^{\text{pc}}_k}{\|\hat{\mathbf{F}}^{\text{brep}}_k\| \|\hat{\mathbf{F}}^{\text{pc}}_k\|}\right)$$
 
-Tokens with high importance $I_i$ and low coverage $A_i^{\text{cov}}$ receive high complementary scores.
+where $\mathcal{K}_{\text{active}} = \{k : c_k > \tau_c\}$ is the set of active feature slots (confidence above threshold $\tau_c = 0.3$).
 
-**Masking.** For padding tokens, we set $S_i^c = -\infty$ before selection.
+**Interpretation.** This loss forces the model to learn grounding that is geometrically consistent. If feature slot 3 attends to "corner holes" in the text, then $\mathbf{G}^{\text{brep}}_{3,:}$ should attend to the hole faces in B-Rep while $\mathbf{G}^{\text{pc}}_{3,:}$ should attend to the corresponding point cloud patches. The alignment layers then map these different representations to a common space where they can be directly compared.
 
-**Top-K selection.** We select the $K = 64$ tokens with highest complementary scores:
+### 4.2 Grounding Diversity Loss (Novel)
 
-$$\mathcal{I}_{\text{sel}} = \text{argtopk}(\mathbf{S}^c, K)$$
-$$\mathbf{X}_{\text{sel}} = \{\mathbf{x}_i : i \in \mathcal{I}_{\text{sel}}\} \in \mathbb{R}^{K \times d}$$
+Without regularization, all feature slot queries might collapse to attending to the same geometric regions (typically the most prominent features). We encourage diverse grounding through an overlap penalty:
 
-**Detail compression.** We define $N_d = 8$ learnable detail queries $\mathbf{Q}_d \in \mathbb{R}^{N_d \times d}$ with positional encodings $\mathbf{P}_d$. These attend to the selected tokens through the same cross-attention mechanism (2 layers, 8 heads):
+$$\mathcal{L}_{\text{diverse}} = \frac{1}{|\mathcal{K}_{\text{active}}|(|\mathcal{K}_{\text{active}}|-1)} \sum_{k \neq k' \in \mathcal{K}_{\text{active}}} \left(\mathbf{G}^{\text{brep}}_{k,:} \cdot \mathbf{G}^{\text{brep}}_{k',:} + \mathbf{G}^{\text{pc}}_{k,:} \cdot \mathbf{G}^{\text{pc}}_{k',:}\right)$$
 
-$$\mathbf{F}_d = \text{CrossAttnLayers}(\mathbf{Q}_d + \mathbf{P}_d, \mathbf{X}_{\text{sel}}, \mathbf{X}_{\text{sel}})$$
+This penalizes pairwise overlap between grounding distributions of different slots, encouraging each active slot to attend to distinct geometric regions.
 
-**Output.** Detail features: $\mathbf{F}_d \in \mathbb{R}^{N_d \times d}$.
+### 4.3 Local Contrastive Loss
 
-### 5.3 Combined Output
+We align grounded features across modalities within each feature slot using InfoNCE [van den Oord et al., 2018]. For a batch of $B$ samples:
 
-**Unified representation:**
+$$\mathcal{L}_{\text{local}} = \frac{1}{|\mathcal{K}_{\text{active}}|} \sum_{k \in \mathcal{K}_{\text{active}}} \mathcal{L}_{\text{NCE}}(\{\tilde{\mathbf{F}}^{\text{brep}}_{i,k}\}_{i=1}^B, \{\tilde{\mathbf{F}}^{\text{pc}}_{i,k}\}_{i=1}^B)$$
 
-$$\mathbf{Z} = [\mathbf{F}_g; \mathbf{F}_d] \in \mathbb{R}^{(N_g + N_d) \times d}$$
+where:
 
-For our default settings, $\mathbf{Z} \in \mathbb{R}^{16 \times 256}$.
+$$\mathcal{L}_{\text{NCE}}(\mathbf{A}, \mathbf{B}) = -\frac{1}{B} \sum_{i=1}^{B} \log \frac{\exp(\bar{\mathbf{a}}_i \cdot \bar{\mathbf{b}}_i / \tau)}{\sum_{j=1}^{B} \exp(\bar{\mathbf{a}}_i \cdot \bar{\mathbf{b}}_j / \tau)}$$
 
-**Global embedding for contrastive learning:**
+with $\bar{\mathbf{a}}_i = \mathbf{a}_i / \|\mathbf{a}_i\|$ denoting L2 normalization and $\tau$ the learnable temperature.
 
-$$\mathbf{z}_g = \frac{1}{N_g} \sum_{i=1}^{N_g} \mathbf{f}_g^{(i)} \in \mathbb{R}^d$$
+This loss ensures that corresponding feature slots align across modalities for the same sample while being discriminable from other samples.
 
-We then project through a learned head:
+### 4.4 Global Contrastive Loss
 
-$$\mathbf{z}_{\text{proj}} = \mathbf{W}_{\text{proj}}^{(2)} \text{GELU}(\mathbf{W}_{\text{proj}}^{(1)} \mathbf{z}_g + \mathbf{b}^{(1)}) + \mathbf{b}^{(2)} \in \mathbb{R}^{d_{\text{proj}}}$$
+For global retrieval, we align the projected embeddings across all modality pairs:
 
-where $d_{\text{proj}} = 128$.
+$$\mathcal{L}_{\text{global}} = \frac{1}{3}\left(\mathcal{L}_{\text{NCE}}(\mathbf{Z}^{\text{brep}}_{\text{proj}}, \mathbf{Z}^{\text{text}}_{\text{proj}}) + \mathcal{L}_{\text{NCE}}(\mathbf{Z}^{\text{pc}}_{\text{proj}}, \mathbf{Z}^{\text{text}}_{\text{proj}}) + \mathcal{L}_{\text{NCE}}(\mathbf{Z}^{\text{brep}}_{\text{proj}}, \mathbf{Z}^{\text{pc}}_{\text{proj}})\right)$$
 
-## 6. Hierarchical Text Encoder
+Each pairwise loss is computed symmetrically (both directions).
 
-The text encoder mirrors the hierarchical structure of the compression module.
+### 4.5 Confidence Regularization
 
-### 6.1 Title Branch (Global)
+To prevent the model from collapsing all confidences to zero (which would minimize the grounding losses trivially), we add a mild regularization encouraging confident predictions:
 
-Project the LLM's last-token representation:
+$$\mathcal{L}_{\text{conf}} = -\frac{1}{K} \sum_{k=1}^{K} c_k \log c_k + (1-c_k) \log(1-c_k)$$
 
-$$\mathbf{t}_g = \mathbf{W}_t^{(2)} \text{GELU}(\mathbf{W}_t^{(1)} \mathbf{h}^{\text{title}} + \mathbf{b}_t^{(1)}) + \mathbf{b}_t^{(2)} \in \mathbb{R}^d$$
+This entropy regularization encourages confident (near 0 or 1) predictions rather than uncertain (near 0.5) ones.
 
-Then project to contrastive space:
+### 4.6 Total Loss
 
-$$\mathbf{t}_{g,\text{proj}} = \text{ProjHead}(\mathbf{t}_g) \in \mathbb{R}^{d_{\text{proj}}}$$
+The total training objective is:
 
-### 6.2 Description Branch (Local)
+$$\mathcal{L} = \lambda_g \mathcal{L}_{\text{global}} + \lambda_l \mathcal{L}_{\text{local}} + \lambda_c \mathcal{L}_{\text{consist}} + \lambda_d \mathcal{L}_{\text{diverse}} + \lambda_r \mathcal{L}_{\text{conf}}$$
 
-We introduce $N_d = 8$ learnable feature queries $\mathbf{Q}_{\text{feat}} \in \mathbb{R}^{N_d \times d}$ that attend to the projected description tokens $\tilde{\mathbf{H}}^{\text{desc}} \in \mathbb{R}^{L_d \times d}$.
+with default weights $\lambda_g = 1.0$, $\lambda_l = 0.5$, $\lambda_c = 0.5$, $\lambda_d = 0.2$, $\lambda_r = 0.1$.
 
-**Cross-attention:**
+---
 
-$$\mathbf{T}_d = \text{CrossAttn}(\mathbf{Q}_{\text{feat}} + \mathbf{P}_{\text{feat}}, \tilde{\mathbf{H}}^{\text{desc}}, \tilde{\mathbf{H}}^{\text{desc}}; \mathbf{m}^{\text{desc}})$$
+## 5. Rotation Augmentation Strategy
 
-where $\mathbf{m}^{\text{desc}}$ is the padding mask for description tokens.
+CAD models in real datasets appear in arbitrary orientations. A model rotated by 90° should produce similar embeddings to its canonical orientation. Since we pre-compute encoder features, runtime augmentation is not possible. We instead pre-compute features for multiple rotations.
 
-Apply FFN:
+### 5.1 Rotation Set Selection
 
-$$\mathbf{T}_d = \mathbf{T}_d + \text{FFN}(\text{LayerNorm}(\mathbf{T}_d))$$
+We use $R = 8$ discrete rotations comprising the identity and 90°/180°/270° rotations around each principal axis:
 
-**Confidence prediction.** Not all descriptions mention multiple features. We predict a confidence score for each feature query indicating whether it found a relevant mention:
+$$\mathcal{R} = \{I, R_x^{90}, R_x^{180}, R_x^{270}, R_y^{90}, R_y^{180}, R_z^{90}, R_z^{180}\}$$
 
-$$c_i = \sigma(\mathbf{w}_c^\top \text{GELU}(\mathbf{W}_c \mathbf{t}_d^{(i)} + \mathbf{b}_c) + b_c') \in (0, 1)$$
+This covers the major axis-aligned orientations without the full 24-rotation symmetry group, balancing coverage against storage requirements.
 
-**Output:**
-- Feature embeddings: $\mathbf{T}_d \in \mathbb{R}^{N_d \times d}$
-- Confidence scores: $\mathbf{c} \in (0, 1)^{N_d}$
+### 5.2 Consistent Multi-Modal Rotation
 
-Project to contrastive space:
+Critically, the same rotation must be applied to both B-Rep and point cloud for each sample. During pre-computation:
 
-$$\mathbf{T}_{d,\text{proj}} = \text{ProjHead}(\mathbf{T}_d) \in \mathbb{R}^{N_d \times d_{\text{proj}}}$$
+1. For each model $m$ and rotation $r \in \mathcal{R}$:
+   - Rotate the B-Rep point grids: $\mathbf{G}_i^{(r)} = \mathbf{G}_i \mathbf{R}_r^\top$
+   - Rotate the point cloud: $\mathcal{P}^{(r)} = \mathcal{P} \mathbf{R}_r^\top$
+   - Encode both and store: $\mathbf{Z}^{\text{brep}}_{m,r}$, $\mathbf{Z}^{\text{pc}}_{m,r}$
 
-## 7. Training Objectives
+2. Text features are rotation-invariant and stored once per model.
 
-### 7.1 Global Contrastive Loss
+### 5.3 Training with Rotation Sampling
 
-We align global embeddings across modalities using InfoNCE [van den Oord et al., 2018].
+During training, for each sample we randomly select one rotation index $r \sim \text{Uniform}(\mathcal{R})$ and load the corresponding B-Rep and point cloud features. This provides rotation augmentation without runtime computational cost.
 
-For a batch of $B$ samples with L2-normalized embeddings $\{\mathbf{z}_i^{(a)}\}_{i=1}^B$ and $\{\mathbf{z}_i^{(b)}\}_{i=1}^B$ from modalities $a$ and $b$:
+### 5.4 Storage Analysis
 
-$$\mathcal{L}_{\text{global}}^{a \to b} = -\frac{1}{B} \sum_{i=1}^{B} \log \frac{\exp(\mathbf{z}_i^{(a)} \cdot \mathbf{z}_i^{(b)} / \tau)}{\sum_{j=1}^{B} \exp(\mathbf{z}_i^{(a)} \cdot \mathbf{z}_j^{(b)} / \tau)}$$
+| Modality | Per-sample size | × Rotations | Total (192K samples) |
+|----------|----------------|-------------|---------------------|
+| B-Rep | ~25 KB | ×8 | ~38 GB |
+| Point Cloud | ~400 KB | ×8 | ~614 GB |
+| Text | ~2 MB | ×1 | ~384 GB |
+| **Total** | | | **~1 TB** |
 
-The symmetric loss:
+While substantial, this is manageable with modern storage. Alternatively, rotation augmentation can be applied only to B-Rep (smaller storage) with point cloud at canonical orientation only, accepting reduced rotation invariance.
 
-$$\mathcal{L}_{\text{global}}^{(a,b)} = \frac{1}{2}\left(\mathcal{L}_{\text{global}}^{a \to b} + \mathcal{L}_{\text{global}}^{b \to a}\right)$$
+---
 
-We compute this for all available modality pairs. If modalities $\{a_1, \ldots, a_k\}$ are present:
+## 6. Hard Negative Mining
 
-$$\mathcal{L}_{\text{global}} = \frac{2}{k(k-1)} \sum_{i < j} \mathcal{L}_{\text{global}}^{(a_i, a_j)}$$
+Following insights from OpenSHAPE [Liu et al., 2023], we employ offline hard negative mining to improve contrastive learning efficiency.
 
-**Temperature.** We use a learnable temperature initialized to $\tau = 0.07$:
+### 6.1 Mining Procedure
 
-$$\tau = \exp(\log \tau_{\text{param}})$$
+After an initial training phase (Stage 1, see §7), we extract embeddings for all training samples and construct a k-NN graph in embedding space. For each sample $i$:
 
-clamped to $[0.01, 1.0]$ during training.
+1. Find $k = 20$ nearest neighbors by geometric embedding similarity
+2. Filter out neighbors $j$ where text embedding similarity exceeds threshold: $\cos(\mathbf{z}_i^{\text{text}}, \mathbf{z}_j^{\text{text}}) > 0.8$
+3. Remaining neighbors are **hard negatives**: geometrically similar but semantically different
 
-### 7.2 Local Contrastive Loss
+### 6.2 Hard Negative Batch Construction
 
-We align geometric detail features $\mathbf{F}_{d,\text{proj}} \in \mathbb{R}^{N_d \times d_{\text{proj}}}$ with text feature embeddings $\mathbf{T}_{d,\text{proj}} \in \mathbb{R}^{N_d \times d_{\text{proj}}}$ using bipartite matching.
+During Stage 2 training, we construct batches to include hard negatives:
 
-**Confidence thresholding.** We only consider text features with confidence above threshold $\tau_c = 0.5$:
+1. Sample $s = 16$ seed indices uniformly
+2. For each seed, add up to 3 of its hard negatives
+3. Fill remaining batch slots with random samples
 
-$$\mathcal{I}_{\text{active}} = \{j : c_j > \tau_c\}$$
+This ensures geometrically confusing pairs appear together in batches, forcing the model to learn fine-grained discriminative features.
 
-If $|\mathcal{I}_{\text{active}}| = 0$, we skip the local loss for this sample.
+---
 
-**Cost matrix.** For sample $n$, compute the cost between all geometric detail features and active text features:
+## 7. Training Procedure
 
-$$C_{ij}^{(n)} = 1 - \frac{\mathbf{f}_{d,i}^{(n)}}{\|\mathbf{f}_{d,i}^{(n)}\|} \cdot \frac{\mathbf{t}_{d,j}^{(n)}}{\|\mathbf{t}_{d,j}^{(n)}\|}, \quad i \in [N_d], j \in \mathcal{I}_{\text{active}}^{(n)}$$
+We employ a two-stage training strategy to establish grounding before global discrimination.
 
-**Hungarian matching.** Find the optimal assignment $\pi^*$ minimizing total cost:
+### 7.1 Stage 1: Grounding Establishment (Epochs 1-30)
 
-$$\pi^* = \arg\min_{\pi} \sum_{i=1}^{\min(N_d, |\mathcal{I}_{\text{active}}|)} C_{i, \pi(i)}$$
+Focus on learning meaningful grounding with reduced global alignment pressure:
 
-This is solved using the Hungarian algorithm (scipy.optimize.linear_sum_assignment).
+- **Active losses**: $\mathcal{L}_{\text{consist}}$, $\mathcal{L}_{\text{diverse}}$, $\mathcal{L}_{\text{local}}$, $\mathcal{L}_{\text{conf}}$
+- **Global loss weight**: $\lambda_g = 0.2$ (reduced)
+- **Learning rate**: $1 \times 10^{-4}$
+- **Batch construction**: Random sampling
 
-**Loss.** The confidence-weighted matching loss:
+This stage teaches the model which text mentions correspond to which geometric regions without strong pressure to discriminate between samples.
 
-$$\mathcal{L}_{\text{local}}^{(n)} = \frac{1}{|\mathcal{I}_{\text{active}}^{(n)}|} \sum_{(i,j) \in \text{Match}^{(n)}} c_j^{(n)} \cdot C_{ij}^{(n)}$$
+### 7.2 Stage 2: Global Alignment with Hard Negatives (Epochs 31-70)
 
-Averaged over the batch:
+Add hard negative mining and full global alignment:
 
-$$\mathcal{L}_{\text{local}} = \frac{1}{|\{n : |\mathcal{I}_{\text{active}}^{(n)}| > 0\}|} \sum_{n} \mathcal{L}_{\text{local}}^{(n)}$$
+- **Active losses**: All losses at full weight
+- **Global loss weight**: $\lambda_g = 1.0$
+- **Learning rate**: $5 \times 10^{-5}$ (reduced)
+- **Batch construction**: Hard negative sampling
 
-### 7.3 Reconstruction Loss (Auxiliary)
+Hard negatives are mined using Stage 1 embeddings at the transition point.
 
-To encourage the unified representation to encode actual geometry, we include an auxiliary reconstruction objective. We emphasize that this is a **regularization term**, not a high-fidelity reconstruction target—the compression ratio is extreme (~4K values encoding ~200K output values).
+### 7.3 Optimization Details
 
-**Decoder architecture.** From the unified representation $\mathbf{Z} \in \mathbb{R}^{16 \times 256}$:
+| Hyperparameter | Value |
+|----------------|-------|
+| Optimizer | AdamW |
+| Base learning rate | $1 \times 10^{-4}$ |
+| Weight decay | 0.05 |
+| Batch size | 64 |
+| LR schedule | Cosine annealing to $1 \times 10^{-6}$ |
+| Warmup | 3 epochs (linear) |
+| Gradient clipping | 1.0 (max norm) |
+| Precision | Mixed (FP16) |
+| Contrastive temperature init | 0.07 (learnable) |
+| Grounding temperature init | 0.1 (learnable) |
 
-1. Flatten: $\mathbf{z}_{\text{flat}} = \text{Flatten}(\mathbf{Z}) \in \mathbb{R}^{4096}$
-2. Predict face latents: $\hat{\mathbf{Z}}^{\text{face}} = \text{MLP}(\mathbf{z}_{\text{flat}}) \in \mathbb{R}^{F_{\max} \times 32}$
-3. Decode each face: $\hat{\mathbf{G}}_i = \mathcal{D}_{\text{face}}(\hat{\mathbf{z}}_i^{\text{face}}) \in \mathbb{R}^{32 \times 32 \times 3}$
+---
 
-The face decoder $\mathcal{D}_{\text{face}}$ mirrors the encoder with transposed convolutions.
+## 8. Inference
 
-**Loss.** L1 reconstruction loss on valid faces only:
+At inference time, we compute embeddings for single-modality inputs to enable cross-modal retrieval.
 
-$$\mathcal{L}_{\text{recon}} = \frac{1}{\sum_i m_i^{\text{face}}} \sum_{i=1}^{F_{\max}} m_i^{\text{face}} \|\mathbf{G}_i - \hat{\mathbf{G}}_i\|_1$$
+### 8.1 Text-to-Geometry Retrieval
 
-Edge reconstruction follows analogously.
+Given a text query, we compute the text embedding:
 
-**Topology loss (optional).** We can additionally predict face-edge adjacency:
+1. Encode text with frozen LLM to get $\mathbf{H}^{\text{text}}$
+2. Project: $\mathbf{X}^{\text{text}} = \text{Proj}_{\text{text}}(\mathbf{H}^{\text{text}})$
+3. Parse features: $\mathbf{T}^{\text{feat}} = \text{TextParser}(\mathbf{X}^{\text{text}})$
+4. Predict confidences: $\mathbf{c} = \text{ConfidencePredictor}(\mathbf{T}^{\text{feat}})$
+5. Aggregate: $\mathbf{z}^{\text{text}} = \sum_k c_k \mathbf{t}_k^{\text{feat}} / \sum_k c_k$
+6. Project: $\mathbf{z}^{\text{text}}_{\text{proj}} = \text{ProjHead}(\mathbf{z}^{\text{text}})$
 
-$$\hat{a}_{ij} = \sigma(\text{MLP}([\hat{\mathbf{z}}_i^{\text{face}}; \hat{\mathbf{z}}_j^{\text{face}}]))$$
+The database of geometric embeddings is pre-computed. Retrieval is performed via nearest neighbor search in the projected embedding space.
 
-$$\mathcal{L}_{\text{topo}} = \text{BCE}(\hat{\mathbf{A}}, \mathbf{A}^{\text{gt}})$$
+### 8.2 Geometry-to-Text/Geometry Retrieval
 
-where $\mathbf{A}^{\text{gt}} \in \{0,1\}^{F \times E}$ is the ground-truth adjacency.
+Given B-Rep or point cloud input, we need to compute geometric embeddings **without** text grounding. We employ a **self-grounding** mechanism where the geometric tokens serve as their own "pseudo-text":
 
-### 7.4 Total Loss
+1. Encode geometry to get $\mathbf{X}^{\text{geo}}$
+2. Apply learned global queries (separate from text feature queries) to extract summary: $\mathbf{Q}^{\text{self}} \in \mathbb{R}^{K \times d}$
+3. Compute self-grounding: $\mathbf{G}^{\text{self}} = \text{softmax}(\mathbf{Q}^{\text{self}} \mathbf{X}^{\text{geo}\top} / \tau)$
+4. Aggregate with uniform confidence: $\mathbf{z}^{\text{geo}} = \text{mean}_n(\bar{\text{imp}}_n \cdot \mathbf{x}_n)$
+5. Project: $\mathbf{z}^{\text{geo}}_{\text{proj}} = \text{ProjHead}(\mathbf{z}^{\text{geo}})$
 
-$$\mathcal{L} = \lambda_g \mathcal{L}_{\text{global}} + \lambda_l \mathcal{L}_{\text{local}} + \lambda_r \mathcal{L}_{\text{recon}} + \lambda_t \mathcal{L}_{\text{topo}}$$
+The self-grounding queries are initialized from the trained text feature queries and optionally fine-tuned.
 
-Default weights: $\lambda_g = 1.0$, $\lambda_l = 0.5$, $\lambda_r = 0.3$, $\lambda_t = 0.1$.
+---
 
-## 8. Handling Rotation Variance
+## 9. Theoretical Analysis
 
-The pretrained encoders (AutoBrep, Point-BERT) are **not** rotation invariant—rotating the input produces different encoder outputs. We address this through data augmentation rather than architectural changes.
+### 9.1 Relationship to Prior Work
 
-**Augmentation strategy.** During training, we apply random rotations to all geometric modalities of the same sample:
-- Sample rotation matrix $\mathbf{R}$ from discrete set: 90° increments around each axis (24 possible rotations)
-- Apply to point cloud: $\mathcal{P}' = \mathcal{P} \mathbf{R}^\top$
-- Apply to B-Rep point grids: $\mathbf{G}_i' = \mathbf{G}_i \mathbf{R}^\top$ (applied to all points in the grid)
+**Comparison with CLIP [Radford et al., 2021].** Standard CLIP aligns global image and text embeddings through contrastive learning. Our approach extends this by (1) decomposing text into feature mentions, (2) learning explicit grounding to geometric primitives, and (3) enforcing grounding consistency across geometric representations.
 
-**Expected outcome.** With sufficient augmentation, the model should learn representations that are similar for rotated versions of the same model. This is **learned approximate invariance**, not guaranteed architectural invariance.
+**Comparison with HCC-CAD [Chen et al., 2024].** HCC-CAD compresses point cloud tokens using attention-coverage-based importance, selecting tokens that global queries under-attended to. Our approach differs fundamentally: we use semantic grounding (what text mentions) rather than statistical coverage (what attention missed) to determine importance. This is a semantic criterion vs. a statistical criterion.
 
-**Validation plan.** We will evaluate rotation robustness by:
-1. Computing embeddings for test models in canonical orientation
-2. Computing embeddings for the same models rotated by random angles
-3. Measuring cosine similarity between original and rotated embeddings
+**Comparison with HoLA [Liu et al., 2025].** HoLA encodes B-Rep topology by training an intersection module that predicts curve geometry from surface pairs. This is a generative approach that encodes topology through reconstruction. Our approach encodes semantics through text grounding—a discriminative approach that encodes meaning through cross-modal correspondence.
 
-We expect high similarity (>0.9) for augmented rotations and moderate similarity for out-of-distribution rotations.
+### 9.2 Why Grounding Consistency Works
 
-## 9. Implementation Specifications
+The grounding consistency loss $\mathcal{L}_{\text{consist}}$ provides supervision that neither modality alone could provide. Consider learning to ground "corner fillet":
 
-### 9.1 Dimensions Summary
+- From B-Rep alone: The model might attend to any small face
+- From point cloud alone: The model might attend to any curved region
+- With consistency: The model must find the region that (1) is small in B-Rep, (2) is curved in point cloud, and (3) corresponds across modalities—this uniquely identifies fillets
 
-| Component | Dimension | Description |
-|-----------|-----------|-------------|
-| $d$ | 256 | Unified feature dimension |
-| $d_{\text{proj}}$ | 128 | Contrastive projection dimension |
-| $d_f$ | 32 | AutoBrep face latent |
-| $d_e$ | 16 | AutoBrep edge latent |
-| $d_{\text{pc}}$ | 384 | Point-BERT output |
-| $d_{\text{LLM}}$ | 3072 | Phi-4-mini hidden dimension |
-| $N_g$ | 8 | Global queries |
-| $N_d$ | 8 | Detail queries |
-| $K$ | 64 | Selected tokens for ADM |
-| $H$ | 8 | Attention heads |
-| $L$ | 2 | Cross-attention layers per level |
-| $F_{\max}$ | 64 | Maximum faces |
-| $E_{\max}$ | 128 | Maximum edges |
-| $N$ | 2048 | Point cloud size |
+The alignment layers $\text{AlignNet}_{\text{brep}}$ and $\text{AlignNet}_{\text{pc}}$ learn the mapping between encoder representation spaces, allowing comparison despite their different structural biases.
 
-### 9.2 Trainable vs Frozen Parameters
+---
+
+## 10. Implementation Details
+
+### 10.1 Pre-computation Pipeline
+
+**B-Rep Features.** We use the AutoBrep encoder [Willis et al., 2025] with publicly released weights trained on ABC-1M. For each face, we extract the 32-dimensional latent before FSQ quantization. For each edge, we extract the 16-dimensional latent. These are concatenated with learned type embeddings and stored as HDF5 files.
+
+**Point Cloud Features.** We use Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] weights. We extract all 513 patch token embeddings (512 patches + 1 CLS) at dimension 384 and store as HDF5 files.
+
+**Text Features.** We use Phi-4-mini (3.8B parameters) [Microsoft, 2024] with frozen weights. We store the full sequence of hidden states at the final layer, dimension 3072, for each description. This enables the trainable text parser to attend to any position.
+
+### 10.2 Model Architecture Summary
 
 | Component | Parameters | Trainable |
 |-----------|------------|-----------|
-| AutoBrep encoders | ~2M | No (frozen) |
-| Point-BERT | ~22M | No (frozen) |
-| LLM (Phi-4-mini) | ~3.8B | No (frozen) |
-| Input projections | ~300K | Yes |
-| Hierarchical compression | ~2M | Yes |
-| Text projections | ~1M | Yes |
-| Projection heads | ~100K | Yes |
-| Reconstruction decoder | ~3M | Yes |
-| **Total trainable** | **~6.4M** | |
+| Unified projections | ~850K | Yes |
+| Text feature parser | ~400K | Yes |
+| Confidence predictor | ~17K | Yes |
+| Grounding projections | ~65K | Yes |
+| Alignment networks | ~130K | Yes |
+| Global projection head | ~65K | Yes |
+| Self-grounding queries | ~2K | Yes |
+| **Total** | **~1.5M** | Yes |
 
-### 9.3 Training Configuration
+The model is extremely lightweight, enabling rapid iteration and training on consumer hardware.
 
-```yaml
-# Optimizer
-optimizer: AdamW
-learning_rate: 1e-4
-weight_decay: 0.05
-betas: [0.9, 0.999]
+### 10.3 Computational Requirements
 
-# Schedule
-epochs: 100
-scheduler: CosineAnnealingLR
-min_lr: 1e-6
-warmup_epochs: 5
-
-# Batch
-batch_size: 32
-gradient_accumulation: 2
-effective_batch_size: 64
-
-# Precision
-mixed_precision: fp16
-gradient_checkpointing: true
-max_grad_norm: 1.0
-
-# Loss weights
-lambda_global: 1.0
-lambda_local: 0.5
-lambda_recon: 0.3
-lambda_topo: 0.1
-```
-
-### 9.4 Training Stages
-
-**Stage 1 (Epochs 1-40): Establish geometric grounding**
-- Enable: $\mathcal{L}_{\text{global}}$, $\mathcal{L}_{\text{recon}}$
-- Disable: $\mathcal{L}_{\text{local}}$
-- Learning rate: 1e-4
-
-**Stage 2 (Epochs 41-100): Add local alignment**
-- Enable: All losses
-- Learning rate: 5e-5 (reduced)
-- $\lambda_r$ reduced to 0.2
-
-## 10. Open Questions and Design Choices to Validate
-
-### 10.1 Architecture Choices
-
-1. **Number of queries.** We set $N_g = N_d = 8$ based on HCC-CAD. Ablation needed for $\{4, 8, 16, 32\}$.
-
-2. **Detail selection count.** We set $K = 64$. If too small, important details are missed; if too large, noise is included.
-
-3. **Coverage computation.** We use max-attention. Alternative: mean-attention or learned aggregation.
-
-4. **Confidence threshold.** We set $\tau_c = 0.5$. This significantly affects local loss computation.
-
-### 10.2 Training Choices
-
-1. **Loss weights.** Current weights are heuristic. Hyperparameter search needed.
-
-2. **Stage transition.** We switch at epoch 40. Earlier or later transition may be better.
-
-3. **Rotation augmentation.** We use discrete 90° rotations. Continuous rotations may improve generalization but slow training.
-
-### 10.3 Encoder Choices
-
-1. **Pretrained weights availability.** AutoBrep weights may require retraining if not released.
-
-2. **LLM selection.** Phi-4-mini vs Qwen2.5-3B vs smaller models. Trade-off between quality and memory.
-
-3. **Point cloud normals.** Current design uses XYZ only. Adding normals requires modifying Point-BERT or using different encoder.
-
-### 10.4 Evaluation Plan
-
-1. **Cross-modal retrieval**: Text→B-Rep, Text→PointCloud, B-Rep→PointCloud (and vice versa)
-2. **Zero-shot classification**: Using text prompts for category names
-3. **Rotation robustness**: Similarity between original and rotated embeddings
-4. **Ablation studies**: Each architectural component and loss term
+| Resource | Requirement |
+|----------|-------------|
+| GPU | Single NVIDIA RTX 4090 (24GB) |
+| Training time | ~4 hours (70 epochs) |
+| Pre-computation time | ~8 hours (one-time) |
+| Storage | ~1 TB (with rotation augmentation) |
+| Peak GPU memory | ~6 GB |
 
 ---
 
-## Appendix: Notation Reference
+## 11. Evaluation Protocol
 
-| Symbol | Description |
-|--------|-------------|
-| $\mathcal{S}, \mathcal{C}, \mathcal{T}$ | B-Rep surfaces, curves, topology |
-| $\mathcal{P}$ | Point cloud |
-| $T_{\text{title}}, T_{\text{desc}}$ | Title and description text |
-| $\mathbf{G}_i$ | Face point grid |
-| $\mathbf{E}_j$ | Edge point sequence |
-| $\mathbf{X}$ | Input token sequence |
-| $\mathbf{Q}_g, \mathbf{Q}_d$ | Global and detail queries |
-| $\mathbf{F}_g, \mathbf{F}_d$ | Global and detail features |
-| $\mathbf{Z}$ | Unified representation |
-| $\mathbf{z}_g$ | Global embedding |
-| $\mathbf{t}_g, \mathbf{T}_d$ | Text global and local embeddings |
-| $\mathbf{c}$ | Text feature confidence scores |
-| $\boldsymbol{\alpha}$ | Attention weights |
-| $A^{\text{cov}}$ | Attention coverage |
-| $I$ | Importance scores |
-| $S^c$ | Complementary scores |
-| $\tau$ | Temperature |
-| $\lambda_*$ | Loss weights |
+### 11.1 Cross-Modal Retrieval
+
+We evaluate on three retrieval tasks:
+- **Text → B-Rep**: Given text description, retrieve matching B-Rep model
+- **Text → Point Cloud**: Given text description, retrieve matching point cloud
+- **B-Rep ↔ Point Cloud**: Cross-geometric-modality retrieval
+
+Metrics: Recall@1, Recall@5, Recall@10, Mean Reciprocal Rank (MRR)
+
+### 11.2 Grounding Quality
+
+We manually annotate 200 test samples with ground-truth correspondences between text mentions and B-Rep faces. We evaluate:
+- **Grounding Precision**: Fraction of top-attended faces that are correct
+- **Grounding Recall**: Fraction of correct faces in top-K attention
+
+### 11.3 Ablation Studies
+
+We ablate each architectural component:
+1. Without grounding consistency loss
+2. Without grounding diversity loss  
+3. Without confidence weighting (fixed K=8)
+4. Without alignment layers (direct comparison)
+5. Without hard negative mining
+6. Without rotation augmentation
+
+### 11.4 Rotation Robustness
+
+For test samples, we compute embeddings at multiple rotations and measure:
+- **Rotation Consistency**: Cosine similarity between embeddings at different rotations
+- **Retrieval Stability**: Whether the same model is retrieved regardless of query rotation
 
 ---
 
-This document represents a technical proposal and implementation plan. All architectural choices and hyperparameters are subject to empirical validation. Claims about model properties (e.g., rotation robustness) are hypotheses to be tested, not established facts.
+## 12. Limitations and Future Work
+
+**Limitation 1: Dependency on Description Quality.** Our approach relies on descriptions that explicitly mention geometric features. Vague descriptions ("a mechanical part") provide weak grounding signal. Future work could incorporate construction sequence information as an additional grounding source.
+
+**Limitation 2: Fixed Maximum Feature Slots.** While confidence weighting handles variable complexity, the maximum K=8 slots may be insufficient for highly complex parts with many distinct features. Adaptive slot allocation could address this.
+
+**Limitation 3: No Topology Encoding.** Unlike HoLA, we do not explicitly encode B-Rep topology. The grounding mechanism implicitly captures some topological information (adjacent faces often share text mentions), but explicit topology encoding could improve performance on topology-sensitive tasks.
+
+**Future Direction: Generation Guidance.** The grounded feature representations could serve as conditioning for generative models. Given a text description, the grounding matrix indicates which geometric regions should be generated with what properties—a form of semantic layout for CAD generation.
+
+---
+
+## References
+
+- Willis, K. D. D., et al. (2025). AutoBrep: Autoregressive B-Rep Generation with Unified Topology and Geometry. *SIGGRAPH*.
+- Yu, X., et al. (2022). Point-BERT: Pre-training 3D Point Cloud Transformers with Masked Point Modeling. *CVPR*.
+- Xue, L., et al. (2024). ULIP-2: Towards Scalable Multimodal Pre-training for 3D Understanding. *CVPR*.
+- Chen, X., et al. (2024). HCC-CAD: Hierarchical Compensated Compression for Efficient 3D Vision-Language Models. *NeurIPS*.
+- Liu, M., et al. (2025). HoLA: B-Rep Generation using a Holistic Latent Representation. *SIGGRAPH*.
+- Radford, A., et al. (2021). Learning Transferable Visual Models From Natural Language Supervision. *ICML*.
+- van den Oord, A., et al. (2018). Representation Learning with Contrastive Predictive Coding. *arXiv*.
+- Liu, M., et al. (2023). OpenSHAPE: Scaling Up 3D Shape Representation Towards Open-World Understanding. *NeurIPS*.
+- Chen, T., et al. (2020). A Simple Framework for Contrastive Learning of Visual Representations. *ICML*.
+- Xiong, R., et al. (2020). On Layer Normalization in the Transformer Architecture. *ICML*.
+- Qi, H., et al. (2024). ShapeLLM: Universal 3D Object Understanding for Embodied Interaction. *ECCV*.
