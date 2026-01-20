@@ -20,6 +20,7 @@ from .gfa_dataset import (
     create_gfa_dataloader,
     HardNegativeSampler,
 )
+from .shapellm_cache import ShapeLLMFeatureCache, verify_shapellm_cache
 
 __all__ = [
     # Standard dataset
@@ -31,4 +32,7 @@ __all__ = [
     "gfa_collate_fn",
     "create_gfa_dataloader",
     "HardNegativeSampler",
+    # ShapeLLM features
+    "ShapeLLMFeatureCache",
+    "verify_shapellm_cache",
 ]

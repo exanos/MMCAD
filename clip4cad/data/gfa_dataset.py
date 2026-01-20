@@ -188,6 +188,7 @@ class GFADataset(Dataset):
         split: str,
         num_rotations: int = 8,
         embeddings_dir: Optional[str] = None,
+        splits_dir: Optional[str] = None,
         use_single_rotation_cache: bool = True,
         load_to_memory: bool = False,
     ):
@@ -197,6 +198,7 @@ class GFADataset(Dataset):
             split: 'train', 'val', or 'test'
             num_rotations: Number of rotations per sample
             embeddings_dir: Directory containing pre-computed features
+            splits_dir: Directory containing split files (default: data_root/splits)
             use_single_rotation_cache: If True, use single-rotation caches
                                        (standard cache format)
             load_to_memory: Load all features to memory
@@ -211,8 +213,14 @@ class GFADataset(Dataset):
             embeddings_dir = self.data_root / "embeddings"
         self.embeddings_dir = Path(embeddings_dir)
 
+        # Splits directory
+        if splits_dir is None:
+            splits_dir = self.data_root / "splits"
+        else:
+            splits_dir = Path(splits_dir)
+
         # Load sample IDs
-        split_file = self.data_root / "splits" / f"{split}.txt"
+        split_file = splits_dir / f"{split}.txt"
         if split_file.exists():
             with open(split_file, "r") as f:
                 self.sample_ids = [line.strip() for line in f if line.strip()]
@@ -240,41 +248,57 @@ class GFADataset(Dataset):
         """Use existing single-rotation cache format."""
         import h5py
 
+        # Try split-prefixed files first, then fall back to single files
         # B-Rep cache
         brep_path = self.embeddings_dir / f"{self.split}_brep_features.h5"
+        if not brep_path.exists():
+            brep_path = self.embeddings_dir / "brep_features.h5"
+
         self.brep_cache = None
         if brep_path.exists():
             self.brep_cache = h5py.File(brep_path, "r")
-            sample_ids = self.brep_cache["sample_ids"][:]
+            # Try different key names
+            uid_key = "sample_ids" if "sample_ids" in self.brep_cache else "uids"
+            sample_ids = self.brep_cache[uid_key][:]
             self.brep_id_to_idx = {
-                (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+                (sid.decode("utf-8") if isinstance(sid, bytes) else str(sid)): i
                 for i, sid in enumerate(sample_ids)
             }
-            print(f"  - B-Rep cache: {len(self.brep_id_to_idx)} samples")
+            print(f"  - B-Rep cache: {len(self.brep_id_to_idx)} samples from {brep_path.name}")
 
         # Point cloud cache
         pc_path = self.embeddings_dir / f"{self.split}_pointcloud_features.h5"
+        if not pc_path.exists():
+            pc_path = self.embeddings_dir / "shapellm_pc_features.h5"
+        if not pc_path.exists():
+            pc_path = self.embeddings_dir / "pointcloud_features.h5"
+
         self.pc_cache = None
         if pc_path.exists():
             self.pc_cache = h5py.File(pc_path, "r")
-            sample_ids = self.pc_cache["sample_ids"][:]
+            uid_key = "sample_ids" if "sample_ids" in self.pc_cache else "uids"
+            sample_ids = self.pc_cache[uid_key][:]
             self.pc_id_to_idx = {
-                (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+                (sid.decode("utf-8") if isinstance(sid, bytes) else str(sid)): i
                 for i, sid in enumerate(sample_ids)
             }
-            print(f"  - PC cache: {len(self.pc_id_to_idx)} samples")
+            print(f"  - PC cache: {len(self.pc_id_to_idx)} samples from {pc_path.name}")
 
         # Text cache
         text_path = self.embeddings_dir / f"{self.split}_text_embeddings.h5"
+        if not text_path.exists():
+            text_path = self.embeddings_dir / "text_embeddings.h5"
+
         self.text_cache = None
         if text_path.exists():
             self.text_cache = h5py.File(text_path, "r")
-            sample_ids = self.text_cache["sample_ids"][:]
+            uid_key = "sample_ids" if "sample_ids" in self.text_cache else "uids"
+            sample_ids = self.text_cache[uid_key][:]
             self.text_id_to_idx = {
-                (sid.decode("utf-8") if isinstance(sid, bytes) else sid): i
+                (sid.decode("utf-8") if isinstance(sid, bytes) else str(sid)): i
                 for i, sid in enumerate(sample_ids)
             }
-            print(f"  - Text cache: {len(self.text_id_to_idx)} samples")
+            print(f"  - Text cache: {len(self.text_id_to_idx)} samples from {text_path.name}")
 
     def _init_multi_rotation_caches(self, load_to_memory: bool):
         """Initialize multi-rotation caches."""
@@ -373,9 +397,11 @@ class GFADataset(Dataset):
                 text_data = self.text_cache.get(sample_id, 0)
 
             if text_data is not None:
-                output["title_embedding"] = torch.from_numpy(
-                    text_data["title_embedding"].astype(np.float32)
-                )
+                # Title embedding is optional
+                if "title_embedding" in text_data:
+                    output["title_embedding"] = torch.from_numpy(
+                        text_data["title_embedding"].astype(np.float32)
+                    )
                 output["desc_embedding"] = torch.from_numpy(
                     text_data["desc_embedding"].astype(np.float32)
                 )
@@ -420,11 +446,14 @@ class GFADataset(Dataset):
             return None
 
         idx = self.text_id_to_idx[sample_id]
-        return {
-            "title_embedding": self.text_cache["title_embeddings"][idx],
+        result = {
             "desc_embedding": self.text_cache["desc_embeddings"][idx],
             "desc_mask": self.text_cache["desc_masks"][idx],
         }
+        # Title embeddings are optional
+        if "title_embeddings" in self.text_cache:
+            result["title_embedding"] = self.text_cache["title_embeddings"][idx]
+        return result
 
     def get_sample_by_id(self, sample_id: str) -> Optional[Dict[str, Any]]:
         """Get sample by ID."""

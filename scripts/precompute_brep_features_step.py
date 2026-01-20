@@ -93,23 +93,70 @@ def load_uid_list(csv_path: Path) -> list:
     return [str(uid) for uid in df["uid"].tolist()]
 
 
-def find_step_files(step_dir: Path, uids: list) -> list:
-    """Find STEP files for given UIDs."""
+def load_uid_mapping(mapping_csv: Path) -> dict:
+    """
+    Load UID mapping from combined_sorted_models.csv.
+
+    Maps stripped modelname -> STEP file uid.
+    E.g., "72164" -> 14397 means 72164 in 169k.csv should use 14397.step
+    """
+    if not mapping_csv.exists():
+        return {}
+
+    df = pd.read_csv(mapping_csv)
+    df['modelname_clean'] = df['modelname'].str.replace('"', '')
+    df['modelname_stripped'] = df['modelname_clean'].str.lstrip('0')
+
+    return dict(zip(df['modelname_stripped'], df['uid']))
+
+
+def find_step_files(step_dir: Path, uids: list, uid_mapping: dict = None) -> list:
+    """
+    Find STEP files for given UIDs using combined lookup strategy.
+
+    Strategy:
+    1. First try: uid as stripped modelname -> mapping -> STEP uid
+    2. Fallback: uid directly as STEP filename
+    """
     samples = []
+    via_mapping = 0
+    via_direct = 0
     missing = 0
 
     for uid in uids:
-        step_path = step_dir / f"{uid}.step"
-        if not step_path.exists():
-            step_path = step_dir / f"{uid}.stp"
-        if step_path.exists():
+        step_path = None
+        step_uid = uid  # Default to direct
+
+        # Method 1: Try mapping (uid is stripped modelname)
+        if uid_mapping and uid in uid_mapping:
+            mapped_uid = str(uid_mapping[uid])
+            mapped_path = step_dir / f"{mapped_uid}.step"
+            if mapped_path.exists():
+                step_path = mapped_path
+                step_uid = mapped_uid
+                via_mapping += 1
+
+        # Method 2: Try direct (uid is STEP filename)
+        if step_path is None:
+            direct_path = step_dir / f"{uid}.step"
+            if not direct_path.exists():
+                direct_path = step_dir / f"{uid}.stp"
+            if direct_path.exists():
+                step_path = direct_path
+                step_uid = uid
+                via_direct += 1
+
+        if step_path:
             samples.append({
-                "uid": uid,
+                "uid": uid,  # Original 169k uid (for output)
+                "step_uid": step_uid,  # Actual STEP file uid
                 "path": str(step_path),
             })
         else:
             missing += 1
 
+    print(f"Found via mapping: {via_mapping}")
+    print(f"Found via direct: {via_direct}")
     if missing > 0:
         print(f"Warning: {missing} STEP files not found")
 
@@ -351,6 +398,20 @@ def load_checkpoint(checkpoint_path: Path):
     return None
 
 
+def load_processed_uids_from_h5(h5_path: Path) -> set:
+    """Load all processed UIDs from existing HDF5 file."""
+    if not h5_path.exists():
+        return set()
+    try:
+        with h5py.File(h5_path, "r") as f:
+            if "uids" in f:
+                uids = set(uid.decode() if isinstance(uid, bytes) else uid for uid in f["uids"][:])
+                return uids
+    except Exception as e:
+        print(f"Warning: Could not read UIDs from HDF5: {e}")
+    return set()
+
+
 def append_to_hdf5(
     output_path: Path,
     face_features: np.ndarray,
@@ -567,6 +628,12 @@ def main():
         action="store_true",
         help="Disable auto-download of pretrained weights from HuggingFace",
     )
+    parser.add_argument(
+        "--mapping-csv",
+        type=str,
+        default=None,
+        help="CSV file mapping modelnames to STEP UIDs (combined_sorted_models.csv)",
+    )
 
     args = parser.parse_args()
 
@@ -589,6 +656,8 @@ def main():
     auto_download = not args.no_auto_download
     print(f"STEP directory: {step_dir}")
     print(f"CSV file: {csv_path}")
+    if args.mapping_csv:
+        print(f"Mapping file: {args.mapping_csv}")
     print(f"Output: {output_path}")
     if auto_download and not args.surface_checkpoint and not args.edge_checkpoint:
         print(f"Weights: auto-download from HuggingFace")
@@ -606,12 +675,18 @@ def main():
     # Check for resume
     processed_uids = set()
     if args.resume:
-        checkpoint = load_checkpoint(checkpoint_path)
-        if checkpoint:
-            processed_uids = set(checkpoint.get("processed_uids", []))
-            print(f"Resuming: {len(processed_uids)} UIDs already processed")
+        # First, try to load UIDs from the HDF5 file itself (most reliable)
+        processed_uids = load_processed_uids_from_h5(output_path)
+        if processed_uids:
+            print(f"Resuming: {len(processed_uids)} UIDs already in HDF5 file")
         else:
-            print("No checkpoint found, starting from beginning")
+            # Fall back to checkpoint
+            checkpoint = load_checkpoint(checkpoint_path)
+            if checkpoint:
+                processed_uids = set(checkpoint.get("processed_uids", []))
+                print(f"Resuming from checkpoint: {len(processed_uids)} UIDs")
+            else:
+                print("No checkpoint or HDF5 found, starting from beginning")
     else:
         if checkpoint_path.exists():
             checkpoint_path.unlink()
@@ -625,9 +700,17 @@ def main():
     uids = load_uid_list(csv_path)
     print(f"Found {len(uids)} UIDs in CSV")
 
+    # Load UID mapping if provided
+    uid_mapping = None
+    if args.mapping_csv:
+        mapping_path = Path(args.mapping_csv)
+        print(f"Loading UID mapping from {mapping_path}...")
+        uid_mapping = load_uid_mapping(mapping_path)
+        print(f"Loaded {len(uid_mapping)} mappings")
+
     # Find STEP files
     print("Finding STEP files...")
-    samples = find_step_files(step_dir, uids)
+    samples = find_step_files(step_dir, uids, uid_mapping)
     print(f"Found {len(samples)} STEP files")
 
     # Filter out already processed

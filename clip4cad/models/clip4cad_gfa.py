@@ -135,7 +135,7 @@ class AlignmentNetwork(nn.Module):
     """
     Modality-specific alignment network for cross-modal consistency.
 
-    Different encoders (AutoBrep for B-Rep, Point-BERT for point cloud) produce
+    Different encoders (AutoBrep for B-Rep, ShapeLLM/ReCon++ for point cloud) produce
     representations with different structural biases. This network learns to
     project modality-specific features into a shared comparison space.
     """
@@ -166,7 +166,7 @@ class UnifiedProjectionGFA(nn.Module):
         d_unified: int = 256,
         d_brep_face: int = 48,
         d_brep_edge: int = 12,
-        d_pointbert: int = 768,
+        d_pointbert: int = 1024,  # ShapeLLM/ReCon++ dimension (changed from 768)
         d_text: int = 3072,
         dropout: float = 0.1,
     ):
@@ -285,7 +285,7 @@ class CLIP4CAD_GFA(nn.Module):
 
         # Max sequence lengths
         self.max_brep_tokens = config.get("max_brep_tokens", 704)  # 192 faces + 512 edges
-        self.max_pc_tokens = config.encoders.pointcloud.get("num_tokens", 513)
+        self.max_pc_tokens = config.encoders.pointcloud.get("num_tokens", 48)  # 32 local + 16 global (ShapeLLM)
         self.max_text_tokens = config.get("max_text_tokens", 512)
 
         # Confidence threshold for active slots
@@ -315,7 +315,7 @@ class CLIP4CAD_GFA(nn.Module):
         # Cross-attention block for text parsing
         self.text_parser = CrossAttentionBlock(
             d_model=d_unified,
-            num_heads=config.get("num_attention_heads", 10),
+            num_heads=config.get("num_attention_heads", 8),
             num_layers=config.get("num_parser_layers", 2),
             dropout=config.get("dropout", 0.1),
         )

@@ -74,19 +74,21 @@ encoders:
     # Pre-computed features are required for GFA training
     use_cached_features: true
 
-  # Point cloud encoder (ULIP-2 Point-BERT)
-  # Features are pre-computed using scripts/precompute_pointcloud_features.py
+  # Point cloud encoder (ShapeLLM/ReCon++ pre-computed)
+  # Features are provided by user (finetuned on 32K CAD models)
   pointcloud:
-    model: ulip2-pointbert
-    checkpoint: null  # Path to ULIP-2 pretrained weights
+    model: shapellm_precomputed  # Changed from ulip2-pointbert
 
-    # Input settings
-    num_points: 10000     # 10K points per sample
-    in_channels: 6        # xyz + normals
+    # ShapeLLM/ReCon++ architecture (for reference)
+    # - 24-layer transformer, 16 heads, embed_dim=1024
+    # - 512 groups pooled to 32 target_groups
 
-    # ULIP-2 Point-BERT output
-    output_dim: 768       # ULIP-2 uses 768 (not 384)
-    num_tokens: 513       # 512 groups + 1 CLS
+    # Output dimensions (from ShapeLLM)
+    output_dim: 1024        # Changed from 768
+    num_tokens: 48          # 32 local_features + 16 global_token
+
+    # Feature types in HDF5 (local_features is primary)
+    use_global_token: true  # Concatenate global_token for 33 tokens
 
     # Pre-computed features are required for GFA training
     use_cached_features: true
@@ -105,12 +107,14 @@ encoders:
     use_cached_embeddings: true
 
 # ============================================================================
-# Rotation Augmentation
+# Rotation Augmentation (DISABLED)
 # ============================================================================
 
-# Number of pre-computed rotations per sample
-# Set to 1 for no rotation augmentation (or use single-rotation cache)
-num_rotations: 8
+# Rotation augmentation is disabled because:
+# 1. ShapeLLM features are pre-computed without rotation variants
+# 2. Captions contain directional references ("vertical", "horizontal")
+#    that require orientation-aware features
+num_rotations: 1
 
 # ============================================================================
 # Training Configuration
