@@ -31,7 +31,7 @@ The AutoBrep encoder architecture consists of:
 - **Edge encoder**: Similar 4-stage 1D architecture with channels [128, 256, 512, 512], processing edge point sequences.
 - **Pretrained weights**: Automatically downloaded from HuggingFace (`SamGiantEagle/AutoBrep`) when not present locally.
 
-**Point Cloud.** We sample $N = 10000$ points with surface normals from the model and encode using Point-BERT [Yu et al., 2022] with ULIP-2 [Xue et al., 2024] pre-trained weights. The encoder performs farthest point sampling to select $M = 512$ seed points, groups $k = 32$ nearest neighbors per seed, and processes through a 12-layer transformer with 12 attention heads, yielding patch tokens $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{513 \times d_{\text{pc}}}$ where $d_{\text{pc}} = 768$.
+**Point Cloud.** We use pre-computed features from a finetuned ShapeLLM/ReCon++ encoder [Qi et al., 2024] trained on 32K CAD models with multi-modal supervision (images, text, point clouds). The ReCon++ encoder processes 10,000 points through a 24-layer transformer with 16 attention heads and embed_dim=1024. We use the pooled local patch features concatenated with the global token, yielding $\mathbf{Z}^{\text{pc}} \in \mathbb{R}^{48 \times 1024}$, representing 32 spatial regions aggregated from the original 512 patch tokens plus a global shape summary.
 
 **Text Description.** Each model is paired with a natural language description $T$ that explicitly references geometric features (e.g., "A cylindrical mounting boss with a central through-hole and four corner mounting slots"). We encode using a frozen large language model (Phi-4-mini, 3.8B parameters) to obtain contextualized token embeddings $\mathbf{H}^{\text{text}} \in \mathbb{R}^{L \times d_{\text{llm}}}$ where $d_{\text{llm}} = 3072$.
 
@@ -58,7 +58,7 @@ The complete architecture comprises four stages, illustrated in Figure 1:
 │         ▼                  ▼                  ▼                             │
 │  ┌──────────────────────────────────────────────────────┐                  │
 │  │           Unified Projection Layer (§3.1)            │                  │
-│  │     X_brep ∈ R^{N_b×d}    X_pc ∈ R^{513×d}    X_text ∈ R^{L×d}         │
+│  │     X_brep ∈ R^{N_b×d}    X_pc ∈ R^{48×d}     X_text ∈ R^{L×d}         │
 │  └──────────────────────────────────────────────────────┘                  │
 │                              │                                              │
 │                              ▼                                              │
@@ -71,7 +71,7 @@ The complete architecture comprises four stages, illustrated in Figure 1:
 │                              ▼                                              │
 │  ┌──────────────────────────────────────────────────────┐                  │
 │  │      Bi-directional Grounding Module (§3.3)          │                  │
-│  │         G_brep ∈ R^{K×N_b}    G_pc ∈ R^{K×513}       │                  │
+│  │         G_brep ∈ R^{K×N_b}    G_pc ∈ R^{K×48}        │                  │
 │  │    Grounded features: F_brep, F_pc ∈ R^{K×d}         │                  │
 │  └──────────────────────────────────────────────────────┘                  │
 │                              │                                              │
@@ -102,11 +102,11 @@ The pre-computed encoder features have heterogeneous dimensions. We project all 
 
 $$\mathbf{X}^{\text{brep}} = \text{LayerNorm}(\mathbf{Z}^{\text{brep}} \mathbf{W}_{\text{brep}} + \mathbf{b}_{\text{brep}}) \in \mathbb{R}^{N_b \times d}$$
 
-$$\mathbf{X}^{\text{pc}} = \text{LayerNorm}(\mathbf{Z}^{\text{pc}} \mathbf{W}_{\text{pc}} + \mathbf{b}_{\text{pc}}) \in \mathbb{R}^{513 \times d}$$
+$$\mathbf{X}^{\text{pc}} = \text{LayerNorm}(\mathbf{Z}^{\text{pc}} \mathbf{W}_{\text{pc}} + \mathbf{b}_{\text{pc}}) \in \mathbb{R}^{48 \times d}$$
 
 $$\mathbf{X}^{\text{text}} = \text{LayerNorm}(\mathbf{H}^{\text{text}} \mathbf{W}_{\text{text}} + \mathbf{b}_{\text{text}}) \in \mathbb{R}^{L \times d}$$
 
-where $\mathbf{W}_{\text{brep}} \in \mathbb{R}^{d_{\text{brep}} \times d}$, $\mathbf{W}_{\text{pc}} \in \mathbb{R}^{d_{\text{pc}} \times d}$, and $\mathbf{W}_{\text{text}} \in \mathbb{R}^{d_{\text{llm}} \times d}$ are learned projection matrices.
+where $\mathbf{W}_{\text{brep}} \in \mathbb{R}^{d_{\text{brep}} \times d}$, $\mathbf{W}_{\text{pc}} \in \mathbb{R}^{1024 \times d}$, and $\mathbf{W}_{\text{text}} \in \mathbb{R}^{d_{\text{llm}} \times d}$ are learned projection matrices.
 
 For B-Rep, we concatenate face and edge tokens with learned type embeddings:
 
@@ -114,7 +114,7 @@ $$\mathbf{Z}^{\text{brep}} = [\mathbf{z}_1^{\text{face}} + \mathbf{e}_{\text{fac
 
 where $\mathbf{e}_{\text{face}}, \mathbf{e}_{\text{edge}} \in \mathbb{R}^{d_{\text{brep}}}$ are learned embeddings distinguishing faces from edges.
 
-**Padding and Masking.** B-Rep models have variable numbers of primitives. We pad to maximum sizes $F_{\max} = 64$, $E_{\max} = 128$ (total $N_b = 192$ tokens) and maintain boolean masks $\mathbf{m}^{\text{brep}} \in \{0,1\}^{N_b}$ indicating valid tokens. Point cloud tokens have fixed count (513) and require no masking. Text description tokens are padded to $L_{\max} = 256$ with mask $\mathbf{m}^{\text{text}}$ (title tokens to 64).
+**Padding and Masking.** B-Rep models have variable numbers of primitives. We pad to maximum sizes $F_{\max} = 192$, $E_{\max} = 512$ (total $N_b = 704$ tokens) and maintain boolean masks $\mathbf{m}^{\text{brep}} \in \{0,1\}^{N_b}$ indicating valid tokens. Point cloud tokens have fixed count (48: 32 local patches + 16 global tokens) and require no masking. Text description tokens are padded to $L_{\max} = 512$ with mask $\mathbf{m}^{\text{text}}$.
 
 ---
 
@@ -165,7 +165,7 @@ To compute grounding, we project text feature slots and geometric tokens into a 
 
 $$\mathbf{T}^g = \mathbf{T}^{\text{feat}} \mathbf{W}_g^{\text{text}} \in \mathbb{R}^{K \times d_g}$$
 $$\mathbf{X}^g_{\text{brep}} = \mathbf{X}^{\text{brep}} \mathbf{W}_g^{\text{geo}} \in \mathbb{R}^{N_b \times d_g}$$
-$$\mathbf{X}^g_{\text{pc}} = \mathbf{X}^{\text{pc}} \mathbf{W}_g^{\text{geo}} \in \mathbb{R}^{513 \times d_g}$$
+$$\mathbf{X}^g_{\text{pc}} = \mathbf{X}^{\text{pc}} \mathbf{W}_g^{\text{geo}} \in \mathbb{R}^{48 \times d_g}$$
 
 Note that B-Rep and point cloud share the same geometric projection $\mathbf{W}_g^{\text{geo}}$, encouraging a unified grounding space for geometry.
 
@@ -179,7 +179,7 @@ where $\tau_g$ is a learnable temperature parameter initialized to 0.1 and clamp
 
 Similarly for point cloud:
 
-$$\mathbf{G}^{\text{pc}}_{k,n} = \frac{\exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_n^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}{\sum_{n'} \exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_{n'}^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}$$
+$$\mathbf{G}^{\text{pc}}_{k,n} = \frac{\exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_n^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}{\sum_{n'=1}^{48} \exp\left(\mathbf{t}_k^g \cdot \mathbf{x}_{n'}^{g,\text{pc}} / (\sqrt{d_g} \cdot \tau_g)\right)}$$
 
 The grounding matrix $\mathbf{G}_{k,:}$ forms a probability distribution over geometric tokens, indicating which regions correspond to feature mention $k$.
 
@@ -201,7 +201,7 @@ $$\tilde{\mathbf{F}}^{\text{pc}}_k = \text{LayerNorm}(\mathbf{F}^{\text{pc}}_k +
 
 ## 3.4 Cross-Modal Alignment Module
 
-A critical challenge is that B-Rep and point cloud encoders produce fundamentally different representations. AutoBrep encodes parametric surfaces with UV-grid structure, while Point-BERT encodes local point patches with neighborhood context. The same geometric region (e.g., a fillet face) may have quite different encoder representations in each modality.
+A critical challenge is that B-Rep and point cloud encoders produce fundamentally different representations. AutoBrep encodes parametric surfaces with UV-grid structure, while ShapeLLM/ReCon++ encodes local point patches with multi-modal context from its pre-training on images and text. The same geometric region (e.g., a fillet face) may have quite different encoder representations in each modality.
 
 To address this, we introduce **learned modality-specific alignment layers** that project grounded features into a shared comparison space before computing consistency losses.
 
@@ -322,43 +322,32 @@ with default weights $\lambda_g = 1.0$, $\lambda_l = 0.5$, $\lambda_c = 0.5$, $\
 
 ---
 
-## 5. Rotation Augmentation Strategy
+## 5. Orientation-Aware Representations
 
-CAD models in real datasets appear in arbitrary orientations. A model rotated by 90° should produce similar embeddings to its canonical orientation. Since we pre-compute encoder features, runtime augmentation is not possible. We instead pre-compute features for multiple rotations.
+Unlike general 3D understanding tasks, CAD model descriptions frequently contain explicit directional references such as "vertical mounting plates", "horizontal through-holes", "top-facing surface", and "side mounting bosses". These orientation-specific semantic associations require representations that preserve directional information rather than achieving rotation invariance.
 
-### 5.1 Rotation Set Selection
+### 5.1 Design Rationale
 
-We use $R = 8$ discrete rotations comprising the identity and 90°/180°/270° rotations around each principal axis:
+Standard rotation augmentation would train the model to produce identical embeddings for differently-oriented versions of the same model. However, this conflicts with our goal of learning accurate text-geometry correspondences when the text explicitly references orientation.
 
-$$\mathcal{R} = \{I, R_x^{90}, R_x^{180}, R_x^{270}, R_y^{90}, R_y^{180}, R_z^{90}, R_z^{180}\}$$
+Consider the description: "A bracket with vertical mounting holes on the left side and horizontal slots on the bottom." Rotation-invariant features would be unable to distinguish "vertical" from "horizontal" orientations, degrading grounding quality.
 
-This covers the major axis-aligned orientations without the full 24-rotation symmetry group, balancing coverage against storage requirements.
+### 5.2 Canonical Orientation
 
-### 5.2 Consistent Multi-Modal Rotation
+We process all models in their canonical orientation as defined in the source datasets. The ShapeLLM features encode models without rotation augmentation, preserving the directional semantics that the text encoder can learn to ground.
 
-Critically, the same rotation must be applied to both B-Rep and point cloud for each sample. During pre-computation:
+### 5.3 Storage Analysis
 
-1. For each model $m$ and rotation $r \in \mathcal{R}$:
-   - Rotate the B-Rep point grids: $\mathbf{G}_i^{(r)} = \mathbf{G}_i \mathbf{R}_r^\top$
-   - Rotate the point cloud: $\mathcal{P}^{(r)} = \mathcal{P} \mathbf{R}_r^\top$
-   - Encode both and store: $\mathbf{Z}^{\text{brep}}_{m,r}$, $\mathbf{Z}^{\text{pc}}_{m,r}$
+Without rotation augmentation, storage requirements are significantly reduced:
 
-2. Text features are rotation-invariant and stored once per model.
+| Modality | Per-sample size | Total (169K samples) |
+|----------|----------------|---------------------|
+| B-Rep | ~25 KB | ~4.2 GB |
+| Point Cloud (ShapeLLM) | ~135 KB | ~23 GB |
+| Text | ~2 MB | ~488 GB |
+| **Total** | | **~365 GB** |
 
-### 5.3 Training with Rotation Sampling
-
-During training, for each sample we randomly select one rotation index $r \sim \text{Uniform}(\mathcal{R})$ and load the corresponding B-Rep and point cloud features. This provides rotation augmentation without runtime computational cost.
-
-### 5.4 Storage Analysis
-
-| Modality | Per-sample size | × Rotations | Total (192K samples) |
-|----------|----------------|-------------|---------------------|
-| B-Rep | ~25 KB | ×8 | ~38 GB |
-| Point Cloud | ~400 KB | ×8 | ~614 GB |
-| Text | ~2 MB | ×1 | ~384 GB |
-| **Total** | | | **~1 TB** |
-
-While substantial, this is manageable with modern storage. Alternatively, rotation augmentation can be applied only to B-Rep (smaller storage) with point cloud at canonical orientation only, accepting reduced rotation invariance.
+This represents a ~3× reduction from the rotation-augmented approach (~1 TB), enabling efficient training on standard hardware.
 
 ---
 
@@ -506,11 +495,16 @@ python scripts/precompute_brep_features_step.py \
     --batch-size 32 --num-workers 60
 ```
 
-**Point Cloud Features** (`scripts/precompute_pointcloud_features_ply.py`):
-- Reads PLY files with 10,000 points + normals (6 channels: xyz + normals)
-- Encodes using Point-BERT with ULIP-2 weights
-- Extracts all 513 patch token embeddings (512 patches + 1 CLS) at dimension 768
-- Features: Checkpointing, resume support, parallel processing
+**Point Cloud Features** (Pre-computed ShapeLLM/ReCon++ embeddings):
+- Pre-computed using finetuned ShapeLLM/ReCon++ encoder
+- Model trained on 32K CAD models with multi-modal (image, text) supervision
+- Architecture: 24-layer transformer, 16 heads, embed_dim=1024, 512 groups pooled to 32
+- Features stored in HDF5 files with structure:
+  - `local_features`: [N, 32, 1024] - Pooled local geometric patches
+  - `global_token`: [N, 1, 1024] - Global shape summary
+  - `filenames`: [N] - Model identifiers for UID mapping
+- Combined usage: 48 tokens (local + global) at 1024 dimensions
+- Storage: ~135KB per model (48×1024×4 bytes)
 
 **Text Features** (`scripts/precompute_text_embeddings_csv.py`):
 - Reads titles and descriptions from CSV file (columns: uid, title, description)
@@ -539,8 +533,8 @@ The model is extremely lightweight (~3M trainable parameters), enabling rapid it
 |----------|-------------|
 | GPU | Single NVIDIA RTX 4090 (24GB) |
 | Training time | ~4 hours (70 epochs) |
-| Pre-computation time | ~8 hours (one-time) |
-| Storage | ~1 TB (with rotation augmentation) |
+| Pre-computation time | ~8 hours (one-time, B-Rep only) |
+| Storage | ~365 GB (orientation-aware, no rotation augmentation) |
 | Peak GPU memory | ~6 GB |
 
 ---
@@ -570,13 +564,13 @@ We ablate each architectural component:
 3. Without confidence weighting (fixed K=12)
 4. Without alignment layers (direct comparison)
 5. Without hard negative mining
-6. Without rotation augmentation
+6. With rotation augmentation (vs. orientation-aware design)
 
-### 11.4 Rotation Robustness
+### 11.4 Orientation Sensitivity
 
-For test samples, we compute embeddings at multiple rotations and measure:
-- **Rotation Consistency**: Cosine similarity between embeddings at different rotations
-- **Retrieval Stability**: Whether the same model is retrieved regardless of query rotation
+Since our approach preserves directional information rather than enforcing rotation invariance:
+- **Orientation Grounding Accuracy**: Whether directional terms ("vertical", "horizontal") correctly ground to appropriately-oriented geometric regions
+- **Directional Description Retrieval**: Retrieval precision for descriptions with explicit orientation references
 
 ---
 
