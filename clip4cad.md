@@ -349,6 +349,34 @@ Without rotation augmentation, storage requirements are significantly reduced:
 
 This represents a ~3× reduction from the rotation-augmented approach (~1 TB), enabling efficient training on standard hardware.
 
+### 5.4 Mixed Precision Training and FP16 Stability
+
+To enable efficient training with large batch sizes and datasets, we implement mixed precision (FP16) training with several critical stability enhancements:
+
+#### Confidence Clamping
+
+The confidence predictor outputs logits that are clamped before sigmoid activation to prevent numerical instability (implementation at `clip4cad_gfa.py:580-583`):
+
+```python
+logits = self.confidence_predictor(T_feat).squeeze(-1)  # (B, K)
+logits = logits.clamp(min=-5, max=5)  # Tight range for FP16
+confidence = torch.sigmoid(logits)   # sigmoid(-5)≈0.007, sigmoid(5)≈0.993
+```
+
+**Rationale:** In FP16, `sigmoid(10)` can round to exactly 1.0, causing `log(1-conf) = -inf` in loss functions. Clamping to [-5, 5] ensures confidence ∈ [0.007, 0.993], preventing NaN.
+
+#### Curriculum-Based Slot Activation Fallback
+
+During early training (epoch < 30), if all slots have confidence below threshold, we fall back to activating the top-3 slots to prevent degenerate solutions where no features are extracted. After epoch 30, we trust the model but ensure at least 1 slot is always active.
+
+#### Confidence Floor Loss
+
+To prevent confidence collapse (where all slots converge to low confidence), we add a soft constraint that encourages mean confidence ≥ 0.3:
+
+$$\mathcal{L}_{\text{floor}} = \max(0, 0.3 - \text{mean}(\mathbf{c}))$$
+
+This prevents the model from learning a degenerate uniform distribution.
+
 ---
 
 ## 6. Hard Negative Mining
@@ -373,31 +401,60 @@ During Stage 2 training, we construct batches to include hard negatives:
 
 This ensures geometrically confusing pairs appear together in batches, forcing the model to learn fine-grained discriminative features.
 
+### 6.3 Hard Negative Persistence
+
+Mined hard negatives are cached to disk for reproducibility:
+
+- **File**: `outputs/hard_negatives/hard_negatives.json`
+- **Format**:
+```json
+{
+  "sample_id_1": [neg_id_1, neg_id_2, ..., neg_id_k],
+  "sample_id_2": [...]
+}
+```
+
+When resuming training in stage 2, hard negatives are automatically reloaded from this file, ensuring consistent negative sampling across training runs.
+
 ---
 
 ## 7. Training Procedure
 
 We employ a two-stage training strategy to establish grounding before global discrimination.
 
-### 7.1 Stage 1: Grounding Establishment (Epochs 1-30)
+**Reduced Training Schedule:** Through empirical testing, we found the model converges effectively with half the originally documented epochs (15 stage 1 + 20 stage 2 = 35 total). The learning rate is reduced to 3e-5 (from 1e-4) to prevent confidence collapse in early training when using mixed precision (FP16).
+
+### 7.1 Stage 1: Grounding Establishment (Epochs 1-15)
 
 Focus on learning meaningful grounding with reduced global alignment pressure:
 
 - **Active losses**: $\mathcal{L}_{\text{consist}}$, $\mathcal{L}_{\text{diverse}}$, $\mathcal{L}_{\text{local}}$, $\mathcal{L}_{\text{conf}}$
 - **Global loss weight**: $\lambda_g = 0.2$ (reduced)
-- **Learning rate**: $1 \times 10^{-4}$
+- **Learning rate**: $3 \times 10^{-5}$
 - **Batch construction**: Random sampling
+- **Epochs**: 15 (reduced from originally documented 30)
 
 This stage teaches the model which text mentions correspond to which geometric regions without strong pressure to discriminate between samples.
 
-### 7.2 Stage 2: Global Alignment with Hard Negatives (Epochs 31-70)
+#### Stage 1 Checkpoint Saving
+
+At the transition from stage 1 to stage 2, a separate checkpoint is saved for ablation studies:
+
+- **File**: `checkpoint_stage1_final.pt`
+- **Purpose**: Enables evaluation of stage 1 grounding alone vs. full two-stage training
+- **Contents**: Model weights, optimizer state, scheduler state, best val loss, epoch, stage
+
+This checkpoint can be used to measure the marginal contribution of hard negative mining and cross-modal alignment (stage 2) over grounding alone (stage 1).
+
+### 7.2 Stage 2: Global Alignment with Hard Negatives (Epochs 16-35)
 
 Add hard negative mining and full global alignment:
 
 - **Active losses**: All losses at full weight
 - **Global loss weight**: $\lambda_g = 1.0$
-- **Learning rate**: $5 \times 10^{-5}$ (reduced)
+- **Learning rate**: $3 \times 10^{-5}$ (maintained from stage 1)
 - **Batch construction**: Hard negative sampling
+- **Epochs**: 20 (epochs 16-35, reduced from originally documented 40)
 
 Hard negatives are mined using Stage 1 embeddings at the transition point.
 
@@ -406,23 +463,143 @@ Hard negatives are mined using Stage 1 embeddings at the transition point.
 | Hyperparameter | Value |
 |----------------|-------|
 | Optimizer | AdamW |
-| Base learning rate | $1 \times 10^{-4}$ |
+| Base learning rate | $3 \times 10^{-5}$ |
 | Weight decay | 0.05 |
-| Batch size | 64 |
+| Batch size | 512 (with in-memory loading) or 64 (default) |
 | LR schedule | Cosine annealing to $1 \times 10^{-6}$ |
 | Warmup | 3 epochs (linear) |
 | Gradient clipping | 1.0 (max norm) |
-| Precision | Mixed (FP16) |
+| Precision | Mixed (FP16) with stability enhancements |
 | Contrastive temperature init | 0.07 (learnable) |
 | Grounding temperature init | 0.1 (learnable) |
 
 ---
 
-## 8. Inference
+## 8. Data Loading and Pre-computation Strategies
+
+### 8.1 Pre-split Text File Loading
+
+For large-scale training with 200GB+ text embeddings, loading the full file for each split (train/val/test) is inefficient. The dataset supports pre-split files with automatic discovery:
+
+**Priority order** (implementation at `gfa_dataset.py:745-750`):
+1. `C:/Users/User/Desktop/text_splits/{split}_text_embeddings.h5` (SSD, fastest)
+2. `{text_path.parent}/{split}_text_embeddings.h5`
+3. `{text_path.parent}/text_splits/{split}_text_embeddings.h5`
+4. `D:/Defect_Det/MMCAD/data/aligned/text_splits/{split}_text_embeddings.h5` (HDD fallback)
+
+**Pre-processing script:**
+```bash
+python scripts/preprocess_text_splits.py \
+    --text-file "path/to/text_embeddings.h5" \
+    --data-root "data/" \
+    --output-dir "path/to/ssd/text_splits" \
+    --fp16  # Saves 50% space
+```
+
+This creates split-specific files (e.g., `train_text_embeddings.h5` with only 111k samples instead of full 169k) that load 5-10× faster.
+
+### 8.2 In-Memory Loading for Large-Scale Training
+
+The `GFAMappedDataset` supports loading the entire training set to RAM:
+
+```python
+train_dataset = GFAMappedDataset(
+    data_root="data/",
+    split="train",
+    load_to_memory=True,  # Loads ~200GB to RAM
+    ...
+)
+```
+
+**Trade-off:**
+- Initial load: ~5 minutes (one-time cost)
+- Training iteration speed: 3-4× faster (no disk I/O)
+- RAM requirement: ~200GB for 111k training samples
+
+**Validation strategy:** Keep validation on disk (`load_to_memory=False`) to save RAM.
+
+### 8.3 UID Mapping for Aligned Training
+
+Since different modalities (B-Rep, point cloud, text) may have different indexing in their HDF5 files, we use a canonical UID mapping:
+
+**Structure** (`uid_mapping.json`):
+```json
+{
+  "canonical_uid": {
+    "brep_idx": 1234,
+    "pc_idx": 5678,
+    "text_idx": 9012
+  }
+}
+```
+
+This allows efficient aligned loading without duplicating data across modality-specific files.
+
+---
+
+## 9. Interactive Training with Jupyter Notebooks
+
+For rapid experimentation and hyperparameter tuning, a Jupyter notebook training workflow is provided at `notebooks/train_gfa.ipynb`.
+
+### 13.1 Key Benefits
+
+1. **Persistent data loading:** Load 200GB dataset once, keep in RAM across training runs
+2. **Fast iteration:** Restart training from any epoch without reloading data
+3. **Easy debugging:** Inspect model state, visualize attention weights, check gradients
+4. **Hyperparameter experimentation:** Try different configs without 5-minute reload penalty
+
+### 13.2 Workflow Structure
+
+**Cell 1-2:** Imports and configuration
+
+**Cell 3:** Load datasets to RAM (~5 min, run once)
+```python
+train_dataset = GFAMappedDataset(..., load_to_memory=True)  # 111k samples, 203GB
+val_dataset = GFAMappedDataset(..., load_to_memory=False)   # Stay on disk
+```
+
+**Cell 4-5:** Initialize model and trainer
+
+**Cell 5.5:** Resume from checkpoint (optional)
+```python
+checkpoint_path = Path("notebooks/outputs/gfa_111k/checkpoint_best.pt")
+trainer.resume(str(checkpoint_path))  # Loads model + optimizer + scheduler
+```
+
+**Cell 6:** Train
+```python
+trainer.train()  # Automatically saves checkpoints every 5 epochs
+```
+
+**Cell 7-9:** Validation, memory monitoring, utilities
+
+### 13.3 Critical Configuration for Notebook Training
+
+```python
+config.training.num_workers = 0  # Data in RAM, no multiprocessing needed
+```
+
+**Why:** DataLoader workers would duplicate the 200GB dataset in RAM (main + worker1 + worker2 = 600GB). With data in RAM, single-process iteration is actually faster.
+
+### 13.4 Module Reloading for Live Code Updates
+
+When fixing bugs or tuning hyperparameters, reload modules without restarting kernel:
+
+```python
+import importlib
+from clip4cad.models import clip4cad_gfa
+importlib.reload(clip4cad_gfa)  # Picks up code changes without data reload
+```
+
+This enables sub-second iteration on model architecture changes.
+
+---
+
+## 10. Inference
 
 At inference time, we compute embeddings for single-modality inputs to enable cross-modal retrieval.
 
-### 8.1 Text-to-Geometry Retrieval
+### 12.1 Text-to-Geometry Retrieval
 
 Given a text query, we compute the text embedding:
 
@@ -449,9 +626,9 @@ The self-grounding queries are initialized from the trained text feature queries
 
 ---
 
-## 9. Theoretical Analysis
+## 11. Theoretical Analysis
 
-### 9.1 Relationship to Prior Work
+### 13.1 Relationship to Prior Work
 
 **Comparison with CLIP [Radford et al., 2021].** Standard CLIP aligns global image and text embeddings through contrastive learning. Our approach extends this by (1) decomposing text into feature mentions, (2) learning explicit grounding to geometric primitives, and (3) enforcing grounding consistency across geometric representations.
 
@@ -459,7 +636,7 @@ The self-grounding queries are initialized from the trained text feature queries
 
 **Comparison with HoLA [Liu et al., 2025].** HoLA encodes B-Rep topology by training an intersection module that predicts curve geometry from surface pairs. This is a generative approach that encodes topology through reconstruction. Our approach encodes semantics through text grounding—a discriminative approach that encodes meaning through cross-modal correspondence.
 
-### 9.2 Why Grounding Consistency Works
+### 13.2 Why Grounding Consistency Works
 
 The grounding consistency loss $\mathcal{L}_{\text{consist}}$ provides supervision that neither modality alone could provide. Consider learning to ground "corner fillet":
 
@@ -471,9 +648,9 @@ The alignment layers $\text{AlignNet}_{\text{brep}}$ and $\text{AlignNet}_{\text
 
 ---
 
-## 10. Implementation Details
+## 12. Implementation Details
 
-### 10.1 Pre-computation Pipeline
+### 12.1 Pre-computation Pipeline
 
 All encoder features are pre-computed using scripts in the `scripts/` directory:
 
@@ -501,7 +678,7 @@ python scripts/precompute_brep_features_step.py \
 - Architecture: 24-layer transformer, 16 heads, embed_dim=1024, 512 groups pooled to 32
 - Features stored in HDF5 files with structure:
   - `local_features`: [N, 32, 1024] - Pooled local geometric patches
-  - `global_token`: [N, 1, 1024] - Global shape summary
+  - `global_token`: [N, 16, 1024] - 16 global tokens from ReCon++ aggregation
   - `filenames`: [N] - Model identifiers for UID mapping
 - Combined usage: 48 tokens (local + global) at 1024 dimensions
 - Storage: ~135KB per model (48×1024×4 bytes)
@@ -512,7 +689,7 @@ python scripts/precompute_brep_features_step.py \
 - Stores full sequence of hidden states at final layer (dimension 3072)
 - Features: Checkpointing, resume support, batched inference
 
-### 10.2 Model Architecture Summary
+### 12.2 Model Architecture Summary
 
 | Component | Parameters | Trainable |
 |-----------|------------|-----------|
@@ -527,7 +704,7 @@ python scripts/precompute_brep_features_step.py \
 
 The model is extremely lightweight (~3M trainable parameters), enabling rapid iteration and training on consumer hardware.
 
-### 10.3 Computational Requirements
+### 12.3 Computational Requirements
 
 | Resource | Requirement |
 |----------|-------------|
@@ -539,9 +716,9 @@ The model is extremely lightweight (~3M trainable parameters), enabling rapid it
 
 ---
 
-## 11. Evaluation Protocol
+## 13. Evaluation Protocol
 
-### 11.1 Cross-Modal Retrieval
+### 13.1 Cross-Modal Retrieval
 
 We evaluate on three retrieval tasks:
 - **Text → B-Rep**: Given text description, retrieve matching B-Rep model
@@ -550,13 +727,13 @@ We evaluate on three retrieval tasks:
 
 Metrics: Recall@1, Recall@5, Recall@10, Mean Reciprocal Rank (MRR)
 
-### 11.2 Grounding Quality
+### 13.2 Grounding Quality
 
 We manually annotate 200 test samples with ground-truth correspondences between text mentions and B-Rep faces. We evaluate:
 - **Grounding Precision**: Fraction of top-attended faces that are correct
 - **Grounding Recall**: Fraction of correct faces in top-K attention
 
-### 11.3 Ablation Studies
+### 13.3 Ablation Studies
 
 We ablate each architectural component:
 1. Without grounding consistency loss
@@ -566,7 +743,7 @@ We ablate each architectural component:
 5. Without hard negative mining
 6. With rotation augmentation (vs. orientation-aware design)
 
-### 11.4 Orientation Sensitivity
+### 13.4 Orientation Sensitivity
 
 Since our approach preserves directional information rather than enforcing rotation invariance:
 - **Orientation Grounding Accuracy**: Whether directional terms ("vertical", "horizontal") correctly ground to appropriately-oriented geometric regions
@@ -574,7 +751,7 @@ Since our approach preserves directional information rather than enforcing rotat
 
 ---
 
-## 12. Limitations and Future Work
+## 14. Limitations and Future Work
 
 **Limitation 1: Dependency on Description Quality.** Our approach relies on descriptions that explicitly mention geometric features. Vague descriptions ("a mechanical part") provide weak grounding signal. Future work could incorporate construction sequence information as an additional grounding source.
 

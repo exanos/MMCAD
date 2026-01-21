@@ -13,7 +13,7 @@ CLIP4CAD-H is designed to learn representations that:
 ### Key Components
 
 1. **B-Rep Encoder**: AutoBrep-style FSQ VAE encoder for face grids and edge curves
-2. **Point Cloud Encoder**: ULIP-2 Point-BERT encoder with FPS + KNN tokenization (10K points)
+2. **Point Cloud Encoder**: ShapeLLM/ReCon++ encoder with 24-layer transformer (10K points)
 3. **Text Encoder**: Frozen LLM (Phi-4-mini) with hierarchical encoding
 4. **Hierarchical Compression Module**: GSC (Global Structure Compression) + ADM (Adaptive Detail Mining)
 5. **Multi-task Losses**: InfoNCE contrastive + local matching + reconstruction
@@ -80,28 +80,27 @@ The B-Rep encoder follows AutoBrep's FSQ VAE architecture:
 
 For CLIP4CAD, we use continuous features (pre-FSQ quantization) for contrastive learning.
 
-### ULIP-2 Weights (Point Cloud Encoder)
+### ShapeLLM/ReCon++ Features (Point Cloud Encoder)
 
-The point cloud encoder uses [ULIP-2](https://github.com/salesforce/ULIP) Point-BERT pretrained weights. Weights are automatically downloaded when running the pre-computation script.
+The point cloud encoder uses pre-computed features from a finetuned ShapeLLM/ReCon++ encoder trained on 32K CAD models with multimodal supervision.
 
 ```bash
-# Pre-compute point cloud features (auto-downloads weights)
-python scripts/precompute_pointcloud_features.py --data-root data/mmcad --download-weights
+# Pre-compute point cloud features using ShapeLLM/ReCon++
+python scripts/precompute_pointcloud_features_ply.py \
+    --data-root data/mmcad \
+    --batch-size 32
 ```
-
-Weights are downloaded from [HuggingFace SFXX/ulip](https://huggingface.co/datasets/SFXX/ulip).
 
 ### Point Cloud Encoder Architecture
 
-The point cloud encoder follows ULIP-2's Point-BERT architecture:
+The point cloud encoder uses features from a finetuned ShapeLLM/ReCon++ encoder:
 
 | Component | Details |
 |-----------|---------|
 | Input | 10K points with xyz + normals (6 channels) |
-| Tokenizer | FPS (512 groups) + KNN (32 neighbors) |
-| Mini-PointNet | 64 → 128 → 256 → 768 |
-| Transformer | 12 layers, 12 heads, 768 dim |
-| Output | 513 tokens (1 CLS + 512 groups) × 768 dim |
+| Backbone | ReCon++: 24-layer transformer, 16 heads, 1024 dim |
+| Output | 48 tokens (32 local patch features + 16 global token) × 1024 dim |
+| Pretrained | Finetuned on 32K CAD models with multimodal supervision |
 
 ## Project Structure
 
@@ -265,12 +264,34 @@ Then enable cached features in your training config:
 python scripts/train.py data.use_cached_brep_features=true
 ```
 
+### Pre-split Text Files (Recommended for Large Datasets)
+
+For datasets with 100k+ samples, loading the full 200GB text embedding file for each split is inefficient. Pre-split the file:
+
+```bash
+python scripts/preprocess_text_splits.py \
+    --text-file "C:/path/to/text_embeddings.h5" \
+    --data-root "data/" \
+    --output-dir "C:/ssd/text_splits" \  # Put on SSD for faster loading
+    --fp16  # Saves 50% disk space
+```
+
+**Output:**
+- `train_text_embeddings.h5` (111k samples, ~90GB FP16)
+- `val_text_embeddings.h5` (16k samples, ~13GB FP16)
+- `test_text_embeddings.h5` (similar size to val)
+
+The dataset automatically discovers and uses these files if present, with SSD locations prioritized for fastest loading.
+
 ### Two-Stage Training
 
-CLIP4CAD-H uses two-stage training:
+CLIP4CAD-GFA uses two-stage training with reduced epochs based on empirical convergence:
 
-1. **Stage 1** (epochs 1-40): Global contrastive + reconstruction
-2. **Stage 2** (epochs 41-100): Add local contrastive alignment
+1. **Stage 1** (epochs 1-15): Grounding learning with global contrastive + local + consistency
+2. **Stage 2** (epochs 16-35): Add hard negative mining for fine-grained alignment
+
+**Learning rate:** 3e-5 (reduced from 1e-4 to prevent confidence collapse in FP16)
+**Batch size:** 512 (when using in-memory data loading)
 
 ```bash
 # Download pretrained weights first
@@ -310,7 +331,49 @@ python scripts/train.py \
 
 # Use custom config
 python scripts/train.py --config-name=custom_config
+
+# In-memory training for 200GB+ datasets
+python scripts/train_gfa.py \
+    --load-to-memory \
+    --num-workers 0 \  # Critical with in-memory loading
+    --batch-size 512
+
+# Use pre-split text files from SSD
+python scripts/train_gfa.py \
+    --text-file "C:/ssd/text_splits/train_text_embeddings.h5"
+
+# Enable gradient checkpointing for memory-constrained GPUs
+python scripts/train_gfa.py \
+    training.gradient_checkpointing=true
 ```
+
+### Jupyter Notebook Training (Recommended for Experimentation)
+
+For rapid experimentation, use the provided Jupyter notebook:
+
+```bash
+jupyter notebook notebooks/train_gfa.ipynb
+```
+
+**Workflow:**
+1. Run cells 1-3 to load 200GB dataset to RAM (~5 min, once)
+2. Run cells 4-5 to initialize model and trainer
+3. Run cell 6 to start training
+4. Interrupt/restart cell 6 anytime - data stays in RAM!
+
+**Key configuration:**
+```python
+config.training.num_workers = 0  # Critical: data in RAM, no workers needed
+config.training.batch_size = 512  # Can use larger batches with in-memory data
+```
+
+**Benefits:**
+- Load data once, experiment with hyperparameters without reload penalty
+- Resume from any checkpoint instantly
+- Live code updates via `importlib.reload()` without kernel restart
+- Built-in memory monitoring and validation cells
+
+See notebook cells for detailed documentation.
 
 ### Logging
 
@@ -370,7 +433,7 @@ python scripts/extract_features.py \
 | B-Rep Face Features | 48 (AutoBrep surfZ) |
 | B-Rep Edge Features | 12 (AutoBrep edgeZ) |
 | Point Cloud Input | 10K points × 6 channels |
-| Point Tokens | 513 × 768 (ULIP-2 Point-BERT) |
+| Point Tokens | 48 × 1024 (ShapeLLM/ReCon++) |
 
 ## Citation
 
