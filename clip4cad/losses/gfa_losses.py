@@ -59,21 +59,61 @@ class GFALoss(nn.Module):
 
     def get_active_slots(
         self,
-        confidence: torch.Tensor
+        confidence: torch.Tensor,
+        min_active: int = 3
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Identify active feature slots based on confidence threshold.
+        Always ensures at least min_active slots are active (top-k fallback).
 
         Args:
             confidence: Slot confidences, (B, K)
+            min_active: Minimum number of active slots per sample
 
         Returns:
             active_mask: Boolean mask, (B, K), True = active
             num_active: Number of active slots per sample, (B,)
         """
+        B, K = confidence.shape
         active_mask = confidence > self.confidence_threshold
+
+        # Check which samples have too few active slots
+        num_above = active_mask.sum(dim=-1)  # (B,)
+        needs_fallback = num_above < min_active
+
+        if needs_fallback.any():
+            # For samples needing fallback, use top-k by confidence
+            _, top_k_indices = confidence.topk(min(min_active, K), dim=-1)  # (B, min_active)
+            fallback_mask = torch.zeros_like(active_mask)
+            fallback_mask.scatter_(1, top_k_indices, True)
+
+            # Apply fallback only to samples that need it
+            active_mask = torch.where(
+                needs_fallback.unsqueeze(-1),
+                active_mask | fallback_mask,  # Union of threshold and top-k
+                active_mask
+            )
+
         num_active = active_mask.sum(dim=-1).clamp(min=1)
         return active_mask, num_active
+
+    def confidence_floor_loss(
+        self,
+        confidence: torch.Tensor,
+        min_mean: float = 0.3
+    ) -> torch.Tensor:
+        """
+        Penalize if average confidence drops too low (prevents confidence collapse).
+
+        Args:
+            confidence: Slot confidences, (B, K)
+            min_mean: Target minimum mean confidence
+
+        Returns:
+            Loss that activates when mean confidence < min_mean
+        """
+        mean_conf = confidence.mean()
+        return F.relu(min_mean - mean_conf)
 
     def global_contrastive_loss(
         self,
@@ -136,6 +176,9 @@ class GFALoss(nn.Module):
 
         For each feature slot k, F_brep[:,k] should match F_pc[:,k] for the
         same sample and not match for different samples.
+
+        Uses confidence as continuous weight (no hard threshold) to prevent
+        the model from learning to suppress all confidences.
         """
         device = confidence.device
 
@@ -150,10 +193,18 @@ class GFALoss(nn.Module):
             total_weight = 0.0
             labels = torch.arange(B, device=device)
 
-            for k in range(K):
-                slot_weight = confidence[:, k].mean()
+            # Get active mask with min_active fallback to ensure some slots are always used
+            active_mask, _ = self.get_active_slots(confidence, min_active=3)
 
-                if slot_weight < 0.1:
+            for k in range(K):
+                # Use confidence as weight, but ensure active slots always contribute
+                slot_conf = confidence[:, k].mean()
+                slot_active = active_mask[:, k].float().mean()
+
+                # Weight: confidence for all slots, but active slots get minimum weight
+                slot_weight = slot_conf + 0.1 * slot_active  # Active slots always contribute
+
+                if slot_weight < 1e-6:
                     continue
 
                 # Normalize features for slot k
@@ -273,9 +324,11 @@ class GFALoss(nn.Module):
 
         Without this, the model might collapse all confidences to zero.
         """
-        # Encourage confidence to be near 0 or 1, not 0.5
-        entropy = -confidence * torch.log(confidence + 1e-8) - \
-                  (1 - confidence) * torch.log(1 - confidence + 1e-8)
+        # Clamp FIRST to prevent log(0) which causes NaN
+        c = confidence.clamp(min=1e-6, max=1-1e-6)
+
+        # Safe log operations
+        entropy = -c * torch.log(c) - (1 - c) * torch.log(1 - c)
 
         return entropy.mean()
 
@@ -340,7 +393,12 @@ class GFALoss(nn.Module):
         # Confidence regularization
         losses["conf_reg"] = self.confidence_regularization(confidence)
 
+        # Confidence floor loss (prevents collapse)
+        losses["conf_floor"] = self.confidence_floor_loss(confidence, min_mean=0.3)
+
         # Combine based on training stage
+        lambda_conf_floor = 0.5  # Weight for confidence floor loss
+
         if stage == 1:
             # Stage 1: Focus on grounding, reduced global loss
             total_loss = (
@@ -348,7 +406,8 @@ class GFALoss(nn.Module):
                 self.lambda_local * losses["local"] +
                 self.lambda_consist * losses["consistency"] +
                 self.lambda_diverse * losses["diversity"] +
-                self.lambda_conf_reg * losses["conf_reg"]
+                self.lambda_conf_reg * losses["conf_reg"] +
+                lambda_conf_floor * losses["conf_floor"]
             )
         else:
             # Stage 2: Full training
@@ -357,7 +416,8 @@ class GFALoss(nn.Module):
                 self.lambda_local * losses["local"] +
                 self.lambda_consist * losses["consistency"] +
                 self.lambda_diverse * losses["diversity"] +
-                self.lambda_conf_reg * losses["conf_reg"]
+                self.lambda_conf_reg * losses["conf_reg"] +
+                lambda_conf_floor * losses["conf_floor"]
             )
 
         losses["total"] = total_loss

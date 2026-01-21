@@ -49,7 +49,7 @@ def extract_embeddings(
 
     iterator = tqdm(dataloader, desc="Extracting embeddings") if show_progress else dataloader
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):  # Use autocast for FP16 consistency
         for batch in iterator:
             outputs = model(batch)
 
@@ -66,8 +66,9 @@ def extract_embeddings(
             else:
                 z_geo = z_pc
 
-            geo_embeddings.append(z_geo.cpu().numpy())
-            text_embeddings.append(z_text.cpu().numpy())
+            # Convert to float32 to avoid dtype issues in downstream operations
+            geo_embeddings.append(z_geo.float().cpu().numpy())
+            text_embeddings.append(z_text.float().cpu().numpy())
             sample_ids.extend(batch["sample_id"])
 
     geo_embeddings = np.vstack(geo_embeddings)
