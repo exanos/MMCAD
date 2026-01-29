@@ -149,6 +149,9 @@ class GFATrainer:
 
     def _init_dataloader(self):
         """Initialize data loaders."""
+        # Get tokenizer from model if using live text encoding
+        tokenizer = getattr(self.model, 'tokenizer', None)
+
         self.train_loader = create_gfa_dataloader(
             self.train_dataset,
             batch_size=self.config["batch_size"],
@@ -156,6 +159,7 @@ class GFATrainer:
             num_workers=self.config["num_workers"],
             pin_memory=self.config["pin_memory"],
             drop_last=True,
+            tokenizer=tokenizer,
         )
 
         if self.val_dataset:
@@ -165,6 +169,7 @@ class GFATrainer:
                 shuffle=False,
                 num_workers=self.config["num_workers"],
                 pin_memory=self.config["pin_memory"],
+                tokenizer=tokenizer,
             )
         else:
             self.val_loader = None
@@ -212,9 +217,14 @@ class GFATrainer:
         print(f"Learning rate: {self.config['learning_rate']}")
         print(f"Checkpoint every: {self.config['save_every']} epochs")
         print(f"Trainable parameters: {self.model.count_parameters(trainable_only=True):,}")
+
+        # Resume from current_epoch if set by resume()
+        start_epoch = self.current_epoch
+        if start_epoch > 0:
+            print(f"Resuming from epoch {start_epoch + 1}")
         print("=" * 60 + "\n")
 
-        for epoch in range(total_epochs):
+        for epoch in range(start_epoch, total_epochs):
             self.current_epoch = epoch + 1
 
             # Check for stage transition
@@ -250,6 +260,19 @@ class GFATrainer:
 
     def _transition_to_stage2(self):
         """Handle transition from stage 1 to stage 2."""
+        # Save Stage 1 final checkpoint (for ablation studies)
+        stage1_path = self.output_dir / "checkpoint_stage1_final.pt"
+        torch.save({
+            "epoch": self.current_epoch,
+            "stage": 1,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
+            "global_step": self.global_step,
+            "best_val_loss": self.best_val_loss,
+        }, stage1_path)
+        print(f"\n✓ Saved Stage 1 final checkpoint: {stage1_path}")
+
         print("\n" + "=" * 60)
         print("Transitioning to Stage 2")
         print("=" * 60)
@@ -268,6 +291,7 @@ class GFATrainer:
         self.hard_neg_dict = self.hard_neg_miner.mine(epoch=self.config["num_epochs_stage1"])
 
         # Recreate dataloader with hard negative sampling
+        tokenizer = getattr(self.model, 'tokenizer', None)
         self.train_loader = create_gfa_dataloader(
             self.train_dataset,
             batch_size=self.config["batch_size"],
@@ -276,6 +300,7 @@ class GFATrainer:
             pin_memory=self.config["pin_memory"],
             drop_last=True,
             hard_neg_dict=self.hard_neg_dict,
+            tokenizer=tokenizer,
         )
 
         # Reduce learning rate
@@ -296,6 +321,7 @@ class GFATrainer:
             "consistency": 0.0,
             "diversity": 0.0,
             "conf_reg": 0.0,
+            "conf_floor": 0.0,
         }
         num_batches = 0
 
@@ -334,13 +360,22 @@ class GFATrainer:
                     epoch_losses[key] += loss_dict[key]
             num_batches += 1
 
-            # Update progress bar
+            # Update progress bar (shortened keys to fit)
             pbar.set_postfix({
-                "loss": f"{loss_dict['total']:.4f}",
-                "global": f"{loss_dict['global']:.4f}",
-                "consist": f"{loss_dict['consistency']:.4f}",
-                "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
+                "loss": f"{loss_dict['total']:.3f}",
+                "G": f"{loss_dict['global']:.3f}",
+                "L": f"{loss_dict['local']:.3f}",
+                "C": f"{loss_dict['consistency']:.3f}",
+                "D": f"{loss_dict['diversity']:.3f}",
+                "cf": f"{loss_dict.get('conf_floor', 0):.3f}",
+                "lr": f"{self.scheduler.get_last_lr()[0]:.1e}",
             })
+
+            # Monitor confidence every 100 batches (detect collapse early)
+            if batch_idx % 100 == 0:
+                conf = outputs["confidence"]
+                num_active = outputs.get("num_active_slots", 0)
+                print(f"\n  [Conf] min={conf.min():.3f} max={conf.max():.3f} mean={conf.mean():.3f} active={num_active:.1f}/12")
 
             # Periodic logging
             if self.global_step % self.config["log_every"] == 0:
@@ -373,6 +408,7 @@ class GFATrainer:
             "local": 0.0,
             "consistency": 0.0,
             "diversity": 0.0,
+            "conf_floor": 0.0,
         }
         num_batches = 0
 
@@ -425,6 +461,7 @@ class GFATrainer:
         print(f"    Local: {train_metrics['local']:.4f}")
         print(f"    Consistency: {train_metrics['consistency']:.4f}")
         print(f"    Diversity: {train_metrics['diversity']:.4f}")
+        print(f"    Conf Floor: {train_metrics.get('conf_floor', 0):.4f}")
 
         if val_metrics:
             print(f"  Val Loss: {val_metrics['total']:.4f}")

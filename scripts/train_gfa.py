@@ -24,7 +24,7 @@ import torch
 from omegaconf import OmegaConf
 
 from clip4cad.models.clip4cad_gfa import CLIP4CAD_GFA
-from clip4cad.data.gfa_dataset import GFADataset
+from clip4cad.data.gfa_dataset import GFADataset, GFAMappedDataset
 from clip4cad.training.gfa_trainer import GFATrainer
 
 
@@ -122,6 +122,52 @@ def parse_args():
         action="store_true",
         help="Enable gradient checkpointing to reduce memory usage",
     )
+    parser.add_argument(
+        "--pc-file",
+        type=str,
+        default=None,
+        help="Path to PC HDF5 file (for mapped dataset mode)",
+    )
+    parser.add_argument(
+        "--brep-file",
+        type=str,
+        default=None,
+        help="Path to B-Rep HDF5 file (default: data_root/embeddings/brep_features.h5)",
+    )
+    parser.add_argument(
+        "--text-file",
+        type=str,
+        default=None,
+        help="Path to text embeddings HDF5 file (default: data_root/embeddings/text_embeddings.h5)",
+    )
+    parser.add_argument(
+        "--use-live-text",
+        action="store_true",
+        help="Encode text at train-time with frozen LLM instead of using pre-computed embeddings",
+    )
+    parser.add_argument(
+        "--csv-path",
+        type=str,
+        default=None,
+        help="Path to CSV file with uid, title, description columns (required if --use-live-text)",
+    )
+    parser.add_argument(
+        "--mapping-dir",
+        type=str,
+        default=None,
+        help="Directory containing uid_mapping.json (default: data_root/aligned)",
+    )
+    parser.add_argument(
+        "--load-to-memory",
+        action="store_true",
+        help="Load all data to RAM for fast training (recommended if you have enough RAM)",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of data loading workers (default: 0 if load-to-memory, else 4)",
+    )
 
     return parser.parse_args()
 
@@ -163,6 +209,18 @@ def main():
         config.training.save_every_steps = args.save_every_steps
     if args.gradient_checkpointing:
         config.training.gradient_checkpointing = True
+
+    # Live text encoding settings
+    if args.use_live_text:
+        config.encoders.text.use_live_text = True
+        config.encoders.text.use_cached_embeddings = False
+        if args.csv_path:
+            config.encoders.text.csv_path = args.csv_path
+
+    # Set num_workers for parallel data loading (prefetching)
+    if args.num_workers is not None:
+        config.training.num_workers = args.num_workers
+    # Note: even with load_to_memory, text is still on disk, so workers help with prefetching
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -217,23 +275,67 @@ def main():
 
     # Create datasets
     print("\nLoading datasets...")
-    train_dataset = GFADataset(
-        data_root=str(data_root),
-        split="train",
-        num_rotations=config.get("num_rotations", 8),
-        use_single_rotation_cache=True,
-    )
-    print(f"Training samples: {len(train_dataset)}")
 
-    val_dataset = None
-    val_split_file = data_root / "splits" / "val.txt"
-    if val_split_file.exists():
-        val_dataset = GFADataset(
+    # Check if we should use mapped dataset (uid_mapping.json exists)
+    mapping_dir = Path(args.mapping_dir) if args.mapping_dir else data_root / "aligned"
+    use_mapped = (mapping_dir / "uid_mapping.json").exists()
+
+    if use_mapped:
+        print("Using GFAMappedDataset (uid_mapping.json found)")
+
+        # Live text encoding settings
+        use_live_text = config.encoders.text.get("use_live_text", False)
+        csv_path = args.csv_path or config.encoders.text.get("csv_path", None)
+
+        if use_live_text:
+            print(f"  Live text encoding enabled (CSV: {csv_path})")
+        else:
+            print(f"  Pre-computed text embeddings: {args.text_file or 'default'}")
+
+        train_dataset = GFAMappedDataset(
+            data_root=str(data_root),
+            split="train",
+            pc_file=args.pc_file,
+            text_file=args.text_file,
+            brep_file=args.brep_file,
+            mapping_dir=str(mapping_dir),
+            num_rotations=config.get("num_rotations", 1),
+            load_to_memory=args.load_to_memory,
+            use_live_text=use_live_text,
+            csv_path=csv_path,
+        )
+        val_dataset = GFAMappedDataset(
             data_root=str(data_root),
             split="val",
+            pc_file=args.pc_file,
+            text_file=args.text_file,
+            brep_file=args.brep_file,
+            mapping_dir=str(mapping_dir),
             num_rotations=1,
+            load_to_memory=False,  # Val stays on disk to save RAM (~36GB saved, validated once per epoch)
+            use_live_text=use_live_text,
+            csv_path=csv_path,
+        )
+    else:
+        print("Using GFADataset (standard mode)")
+        train_dataset = GFADataset(
+            data_root=str(data_root),
+            split="train",
+            num_rotations=config.get("num_rotations", 8),
             use_single_rotation_cache=True,
         )
+        val_dataset = None
+        val_split_file = data_root / "splits" / "val.txt"
+        if val_split_file.exists():
+            val_dataset = GFADataset(
+                data_root=str(data_root),
+                split="val",
+                num_rotations=1,
+                use_single_rotation_cache=True,
+            )
+
+    print(f"Training samples: {len(train_dataset)}")
+    if val_dataset:
         print(f"Validation samples: {len(val_dataset)}")
 
     # Create trainer

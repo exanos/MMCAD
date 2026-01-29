@@ -38,6 +38,14 @@ max_text_tokens: 512    # Max description length
 # Confidence threshold for active feature slots
 confidence_threshold: 0.3
 
+# Curriculum fallback: use top-3 slots if all below threshold during warmup
+# After warmup_epochs, trust the model (but ensure at least 1 slot)
+fallback_warmup_epochs: 30
+
+# Self-grounding consistency loss weight
+# Trains self_ground_queries to match text-grounded importance
+lambda_self_consist: 0.1
+
 # ============================================================================
 # Temperature Initialization
 # ============================================================================
@@ -94,7 +102,7 @@ encoders:
     use_cached_features: true
 
   # Text encoder (LLM)
-  # Features are pre-computed using scripts/precompute_text_embeddings.py
+  # Features can be pre-computed OR encoded at train-time
   text:
     model_name: microsoft/Phi-4-mini-instruct
     hidden_dim: 3072  # Phi-4-mini hidden dimension
@@ -102,9 +110,21 @@ encoders:
     # Max sequence lengths
     max_title_len: 64
     max_desc_len: 256
+    max_text_len: 512  # For live encoding (title + description)
 
-    # Pre-computed embeddings are required for GFA training
+    # ===== Text Encoding Mode =====
+    # Option 1: Pre-computed embeddings (default, faster training)
+    #   use_cached_embeddings: true
+    #   use_live_text: false
+    #
+    # Option 2: Train-time encoding (no 250GB embedding files needed)
+    #   use_cached_embeddings: false
+    #   use_live_text: true
+    #   csv_path: path/to/169k.csv
     use_cached_embeddings: true
+    use_live_text: false
+    freeze_llm: true  # Keep LLM frozen (only train projection head)
+    csv_path: null    # Path to CSV file (required if use_live_text=true)
 
 # ============================================================================
 # Rotation Augmentation (DISABLED)
@@ -122,12 +142,12 @@ num_rotations: 1
 
 training:
   # Two-stage training
-  num_epochs_stage1: 30   # Grounding establishment
-  num_epochs_stage2: 40   # Global alignment with hard negatives
+  num_epochs_stage1: 15   # Grounding establishment (reduced - model learns quickly)
+  num_epochs_stage2: 20   # Global alignment with hard negatives (reduced - total 35 instead of 70)
 
   # Optimization
   batch_size: 64
-  learning_rate: 1.0e-4
+  learning_rate: 3.0e-5  # Reduced from 1e-4 to prevent confidence collapse
   weight_decay: 0.05
   warmup_epochs: 3
   min_lr: 1.0e-6

@@ -291,6 +291,10 @@ class CLIP4CAD_GFA(nn.Module):
         # Confidence threshold for active slots
         self.confidence_threshold = config.get("confidence_threshold", 0.3)
 
+        # Curriculum fallback settings
+        self.fallback_warmup_epochs = config.get("fallback_warmup_epochs", 30)
+        self._current_epoch = 0  # Updated by training loop
+
         # =====================================================================
         # Unified Projection Layer
         # =====================================================================
@@ -321,11 +325,11 @@ class CLIP4CAD_GFA(nn.Module):
         )
 
         # Confidence predictor for each feature slot
+        # Note: Sigmoid applied manually with logit clamping for FP16 stability
         self.confidence_predictor = nn.Sequential(
             nn.Linear(d_unified, d_unified // 4),
             nn.GELU(),
-            nn.Linear(d_unified // 4, 1),
-            nn.Sigmoid()
+            nn.Linear(d_unified // 4, 1)
         )
 
         # =====================================================================
@@ -334,7 +338,10 @@ class CLIP4CAD_GFA(nn.Module):
 
         # Grounding space projections
         self.ground_text = nn.Linear(d_unified, d_ground)
-        self.ground_geo = nn.Linear(d_unified, d_ground)  # Shared for both modalities
+        # Separate grounding projections for different geometric modalities
+        # This allows the model to learn modality-specific grounding spaces
+        self.ground_brep = nn.Linear(d_unified, d_ground)
+        self.ground_pc = nn.Linear(d_unified, d_ground)
 
         # Learnable grounding temperature
         self.log_tau_ground = nn.Parameter(
@@ -389,6 +396,9 @@ class CLIP4CAD_GFA(nn.Module):
 
         self.self_ground_queries = nn.Parameter(torch.randn(K, d_unified) * 0.02)
 
+        # Self-grounding consistency loss weight (from config)
+        self.lambda_self_consist = config.get("lambda_self_consist", 0.1)
+
         # =====================================================================
         # Learnable Contrastive Temperature
         # =====================================================================
@@ -396,6 +406,74 @@ class CLIP4CAD_GFA(nn.Module):
         self.log_tau_contrastive = nn.Parameter(
             torch.log(torch.tensor(config.get("tau_contrastive_init", 0.07)))
         )
+
+        # =====================================================================
+        # Text Encoder (optional, for train-time encoding)
+        # =====================================================================
+
+        self.use_live_text = config.encoders.text.get("use_live_text", False)
+        self.tokenizer = None
+        self.text_llm = None
+
+        if self.use_live_text:
+            self._init_text_encoder(config)
+
+    def _init_text_encoder(self, config: DictConfig):
+        """
+        Initialize frozen LLM for train-time text encoding.
+        Pattern follows scripts/precompute_text_embeddings_csv.py
+        """
+        from transformers import AutoModel, AutoTokenizer
+
+        model_name = config.encoders.text.get("model_name", "microsoft/Phi-4-mini-instruct")
+        freeze_llm = config.encoders.text.get("freeze_llm", True)
+
+        print(f"Initializing text encoder: {model_name}")
+
+        # Load tokenizer (same as precompute script)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+        # Load model with optimized attention
+        # Priority: Flash Attention 2 > SDPA > Default
+        loaded = False
+        for attn_impl in ["flash_attention_2", "sdpa"]:
+            try:
+                self.text_llm = AutoModel.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16,
+                    trust_remote_code=True,
+                    attn_implementation=attn_impl,
+                )
+                print(f"  Using {attn_impl} attention")
+                loaded = True
+                break
+            except Exception as e:
+                print(f"  {attn_impl} not available: {str(e)[:50]}...")
+                continue
+
+        if not loaded:
+            print(f"  Using default attention (slowest)")
+            self.text_llm = AutoModel.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+            )
+        self.text_llm.eval()
+
+        # Freeze LLM parameters
+        if freeze_llm:
+            for param in self.text_llm.parameters():
+                param.requires_grad = False
+            print(f"  Frozen LLM: {model_name}")
+
+        # torch.compile disabled - requires Triton which is Linux-only
+        # To enable on Linux: pip install triton
 
     # =========================================================================
     # Property Accessors for Temperatures
@@ -410,6 +488,60 @@ class CLIP4CAD_GFA(nn.Module):
     def tau_contrastive(self) -> torch.Tensor:
         """Contrastive temperature, clamped to valid range."""
         return self.log_tau_contrastive.exp().clamp(0.01, 1.0)
+
+    def set_epoch(self, epoch: int):
+        """Set current epoch for curriculum learning."""
+        self._current_epoch = epoch
+
+    def get_active_slots(
+        self,
+        confidence: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Get active slot mask with curriculum fallback for low-confidence slots.
+
+        Early training (epoch < warmup): fallback to top-3 if all below threshold
+        Late training (epoch >= warmup): trust the model, ensure at least 1 slot
+
+        Args:
+            confidence: Slot confidence scores, (B, K)
+
+        Returns:
+            active_mask: Boolean mask, (B, K), True = active slot
+        """
+        threshold = self.confidence_threshold
+        active_mask = confidence > threshold
+
+        # Check which samples have no active slots
+        batch_has_no_active = (active_mask.sum(dim=-1) == 0)  # (B,)
+
+        if batch_has_no_active.any():
+            if self._current_epoch < self.fallback_warmup_epochs:
+                # Early training: fallback to top-3 slots
+                _, top_indices = confidence.topk(min(3, confidence.shape[-1]), dim=-1)
+                fallback_mask = torch.zeros_like(active_mask)
+                fallback_mask.scatter_(-1, top_indices, True)
+
+                # Apply fallback only to samples with no active slots
+                active_mask = torch.where(
+                    batch_has_no_active.unsqueeze(-1),
+                    fallback_mask,
+                    active_mask
+                )
+            else:
+                # Late training: trust the model, but ensure at least 1 slot
+                _, top_idx = confidence.max(dim=-1, keepdim=True)
+                fallback_mask = torch.zeros_like(active_mask)
+                fallback_mask.scatter_(-1, top_idx, True)
+
+                # Apply fallback only to samples with no active slots
+                active_mask = torch.where(
+                    batch_has_no_active.unsqueeze(-1),
+                    fallback_mask,
+                    active_mask
+                )
+
+        return active_mask
 
     # =========================================================================
     # Core Forward Methods
@@ -444,8 +576,11 @@ class CLIP4CAD_GFA(nn.Module):
             queries, X_text, key_padding_mask=text_mask
         )
 
-        # Predict confidence for each slot
-        confidence = self.confidence_predictor(T_feat).squeeze(-1)  # (B, K)
+        # Predict confidence for each slot with FP16-safe sigmoid
+        # Clamp logits BEFORE sigmoid to prevent extreme values in FP16
+        logits = self.confidence_predictor(T_feat).squeeze(-1)  # (B, K)
+        logits = logits.clamp(min=-5, max=5)  # Tighter range for FP16: sigmoid(-5) ≈ 0.007, sigmoid(5) ≈ 0.993
+        confidence = torch.sigmoid(logits)  # Prevents exact 0 or 1 which cause log(1-conf) = -inf
 
         return T_feat, confidence, attn_weights
 
@@ -453,7 +588,8 @@ class CLIP4CAD_GFA(nn.Module):
         self,
         T_feat: torch.Tensor,
         X_geo: torch.Tensor,
-        geo_mask: Optional[torch.Tensor] = None
+        geo_mask: Optional[torch.Tensor] = None,
+        modality: str = "brep"
     ) -> torch.Tensor:
         """
         Compute grounding matrix between text features and geometric tokens.
@@ -462,13 +598,19 @@ class CLIP4CAD_GFA(nn.Module):
             T_feat: Feature mention embeddings, (B, K, d)
             X_geo: Geometric tokens, (B, N, d)
             geo_mask: Boolean mask, (B, N), True = valid token
+            modality: Which geometric modality ("brep" or "pc")
 
         Returns:
             G: Grounding matrix, (B, K, N)
         """
         # Project to grounding space
         T_g = self.ground_text(T_feat)  # (B, K, d_ground)
-        X_g = self.ground_geo(X_geo)  # (B, N, d_ground)
+
+        # Use modality-specific projection
+        if modality == "brep":
+            X_g = self.ground_brep(X_geo)  # (B, N, d_ground)
+        else:
+            X_g = self.ground_pc(X_geo)  # (B, N, d_ground)
 
         # Compute scaled dot-product attention scores
         d_g = self.d_ground
@@ -578,6 +720,90 @@ class CLIP4CAD_GFA(nn.Module):
 
         return importance
 
+    def compute_self_grounding_importance(
+        self,
+        X_geo: torch.Tensor,
+        geo_mask: Optional[torch.Tensor] = None,
+        modality: str = "brep"
+    ) -> torch.Tensor:
+        """
+        Compute self-grounding importance using learned queries (no text).
+
+        Used for training self-grounding consistency loss to ensure
+        self_ground_queries produce similar importance weights to text-grounded ones.
+
+        Args:
+            X_geo: Projected geometric tokens, (B, N, d)
+            geo_mask: Boolean mask, (B, N), True = valid token
+            modality: Which geometric modality ("brep" or "pc")
+
+        Returns:
+            importance: Self-grounded importance scores, (B, N)
+        """
+        B = X_geo.shape[0]
+
+        # Use self-grounding queries
+        queries = self.self_ground_queries.unsqueeze(0).expand(B, -1, -1)  # (B, K, d)
+
+        # Compute grounding matrix using self-queries
+        G_self = self.compute_grounding_matrix(queries, X_geo, geo_mask, modality=modality)
+
+        # Sum over slots to get per-token importance (uniform confidence)
+        importance = G_self.sum(dim=1)  # (B, N)
+
+        # Apply geometric mask
+        if geo_mask is not None:
+            importance = importance * geo_mask.float()
+
+        # Normalize to distribution
+        importance_sum = importance.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        importance = importance / importance_sum
+
+        return importance
+
+    def compute_self_grounding_consistency_loss(
+        self,
+        imp_text_grounded: torch.Tensor,
+        imp_self_grounded: torch.Tensor,
+        geo_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Compute KL divergence between text-grounded and self-grounded importance.
+
+        This loss trains self_ground_queries to produce consistent importance
+        weights with text-guided grounding.
+
+        Args:
+            imp_text_grounded: Text-grounded importance, (B, N)
+            imp_self_grounded: Self-grounded importance, (B, N)
+            geo_mask: Boolean mask, (B, N), True = valid token
+
+        Returns:
+            loss: KL divergence loss (scalar)
+        """
+        # Clamp to avoid log(0)
+        imp_text = imp_text_grounded.clamp(min=1e-8)
+        imp_self = imp_self_grounded.clamp(min=1e-8)
+
+        # KL divergence: D_KL(text || self) = sum(text * log(text/self))
+        # Using F.kl_div which expects log-probabilities for input
+        loss = F.kl_div(
+            imp_self.log(),
+            imp_text,
+            reduction='none'
+        )
+
+        # Apply mask if provided
+        if geo_mask is not None:
+            loss = loss * geo_mask.float()
+            # Average over valid tokens
+            num_valid = geo_mask.float().sum(dim=-1).clamp(min=1.0)
+            loss = loss.sum(dim=-1) / num_valid
+        else:
+            loss = loss.sum(dim=-1)
+
+        return loss.mean()
+
     def compute_global_embeddings(
         self,
         X_brep: torch.Tensor,
@@ -677,7 +903,29 @@ class CLIP4CAD_GFA(nn.Module):
             text_features = batch["desc_embedding"].to(device)
             text_mask = batch["desc_mask"].to(device)
         else:
-            raise NotImplementedError("Live text encoding not implemented for GFA")
+            # Live text encoding using frozen LLM
+            if self.text_llm is None:
+                raise RuntimeError("Live text encoding requested but text_llm not initialized. "
+                                   "Set use_live_text=True in config.")
+
+            # Ensure text_llm is on the correct device (critical for performance)
+            llm_device = next(self.text_llm.parameters()).device
+            if llm_device != device:
+                self.text_llm = self.text_llm.to(device)
+
+            text_input_ids = batch["text_input_ids"].to(device)
+            text_attention_mask = batch["text_attention_mask"].to(device)
+
+            # Run through frozen LLM (no gradients)
+            with torch.no_grad():
+                text_output = self.text_llm(
+                    input_ids=text_input_ids,
+                    attention_mask=text_attention_mask,
+                )
+                # Get hidden states and convert to float32 for projection
+                text_features = text_output.last_hidden_state.float()  # [B, L, d_llm]
+
+            text_mask = text_attention_mask
 
         X_text = self.projection.project_text(text_features)
 
@@ -689,6 +937,13 @@ class CLIP4CAD_GFA(nn.Module):
         outputs["confidence"] = confidence
         outputs["text_attn"] = text_attn
 
+        # Compute active slot mask with curriculum fallback
+        active_mask = self.get_active_slots(confidence)
+        outputs["active_mask"] = active_mask
+
+        # Count active slots per sample (for monitoring/debugging)
+        outputs["num_active_slots"] = active_mask.sum(dim=-1).float().mean()
+
         # =================================================================
         # Step 3: Compute grounding matrices
         # =================================================================
@@ -697,11 +952,11 @@ class CLIP4CAD_GFA(nn.Module):
         G_pc = None
 
         if has_brep and X_brep is not None:
-            G_brep = self.compute_grounding_matrix(T_feat, X_brep, brep_mask)
+            G_brep = self.compute_grounding_matrix(T_feat, X_brep, brep_mask, modality="brep")
             outputs["G_brep"] = G_brep
 
         if has_pc and X_pc is not None:
-            G_pc = self.compute_grounding_matrix(T_feat, X_pc, None)
+            G_pc = self.compute_grounding_matrix(T_feat, X_pc, None, modality="pc")
             outputs["G_pc"] = G_pc
 
         # =================================================================
@@ -748,6 +1003,34 @@ class CLIP4CAD_GFA(nn.Module):
         if G_pc is not None:
             imp_pc = self.compute_semantic_importance(G_pc, confidence, None)
             outputs["imp_pc"] = imp_pc
+
+        # =================================================================
+        # Step 6.5: Compute self-grounding consistency loss
+        # =================================================================
+
+        # Train self-grounding queries to produce consistent importance
+        # weights with text-guided grounding
+        L_self_consist = torch.tensor(0.0, device=device)
+
+        if has_brep and X_brep is not None and imp_brep is not None:
+            imp_self_brep = self.compute_self_grounding_importance(X_brep, brep_mask, modality="brep")
+            L_self_consist = L_self_consist + self.compute_self_grounding_consistency_loss(
+                imp_brep, imp_self_brep, brep_mask
+            )
+            outputs["imp_self_brep"] = imp_self_brep
+
+        if has_pc and X_pc is not None and imp_pc is not None:
+            imp_self_pc = self.compute_self_grounding_importance(X_pc, None, modality="pc")
+            L_self_consist = L_self_consist + self.compute_self_grounding_consistency_loss(
+                imp_pc, imp_self_pc, None
+            )
+            outputs["imp_self_pc"] = imp_self_pc
+
+        # Average if both modalities present
+        if (has_brep and X_brep is not None) and (has_pc and X_pc is not None):
+            L_self_consist = L_self_consist / 2.0
+
+        outputs["L_self_consist"] = L_self_consist
 
         # =================================================================
         # Step 7: Compute global embeddings
@@ -867,7 +1150,7 @@ class CLIP4CAD_GFA(nn.Module):
 
             # Self-grounding
             queries = self.self_ground_queries.unsqueeze(0).expand(B, -1, -1)
-            G_self = self.compute_grounding_matrix(queries, X_brep, brep_mask)
+            G_self = self.compute_grounding_matrix(queries, X_brep, brep_mask, modality="brep")
 
             # Importance-weighted aggregation
             importance = G_self.sum(dim=1)  # (B, N)
@@ -884,7 +1167,7 @@ class CLIP4CAD_GFA(nn.Module):
 
             # Self-grounding
             queries = self.self_ground_queries.unsqueeze(0).expand(B, -1, -1)
-            G_self = self.compute_grounding_matrix(queries, X_pc, None)
+            G_self = self.compute_grounding_matrix(queries, X_pc, None, modality="pc")
 
             importance = G_self.sum(dim=1)
             importance = importance / importance.sum(dim=-1, keepdim=True).clamp(min=1e-8)
