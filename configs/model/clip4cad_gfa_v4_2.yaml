@@ -1,0 +1,68 @@
+# CLIP4CAD-GFA v4.2 Configuration
+# Conditional Self-Query Generation with Curriculum Learning
+
+# Model dimensions
+d_face: 48
+d_edge: 12
+d_pc: 1024
+d_text: 3072
+d_unified: 256
+d_proj: 128
+d_ground: 128
+
+# Architecture
+num_slots: 12
+num_detail_queries: 8
+num_heads: 8
+num_parser_layers: 2
+dropout: 0.1
+
+# Conditional Self-Query Generator (v4.2 specific)
+# NOTE: Reduced from 4+4 to 2+2 for faster training (similar speed to v2)
+brep_encoder_layers: 2      # Was 4, reduced for speed
+brep_decoder_layers: 2      # Was 4, reduced for speed
+pc_encoder_layers: 1        # Was 2, reduced for speed
+pc_decoder_layers: 2        # Kept at 2
+
+# Max sequence lengths
+max_faces: 192
+max_edges: 512
+max_pc_tokens: 33
+
+# Temperature
+tau_init: 0.07
+
+# Training Configuration
+training:
+  # Stage 1: Heavy query distillation with curriculum
+  stage1_epochs: 15
+  stage1_lr: 3.0e-5
+  stage1_lambda_self: 0.1
+  stage1_lambda_query: 1.5        # High - key loss
+  stage1_lambda_embed: 0.3
+  stage1_lambda_dist: 0.3         # Distribution matching
+  stage1_lambda_detail: 0.0
+
+  # Stage 2: Balanced + hard negatives (no conditioning)
+  stage2_epochs: 20
+  stage2_lr: 1.0e-5
+  stage2_lambda_self: 0.3
+  stage2_lambda_query: 1.0
+  stage2_lambda_embed: 0.3
+  stage2_lambda_dist: 0.2
+  stage2_lambda_detail: 0.3
+
+  # General
+  batch_size: 512
+  warmup_epochs: 3
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+# Curriculum Schedule (cond_drop_rate)
+# Stage 1:
+#   Epoch 1-3:   0.1 (90% samples get hints)
+#   Epoch 4-7:   0.3 (70% samples get hints)
+#   Epoch 8-11:  0.5 (50% samples get hints)
+#   Epoch 12-15: 0.7 (30% samples get hints)
+# Stage 2:
+#   Always 1.0 (0% hints - fully independent)

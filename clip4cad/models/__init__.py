@@ -15,6 +15,10 @@ Components:
 
 from .clip4cad_h import CLIP4CAD_H
 from .clip4cad_gfa import CLIP4CAD_GFA
+from .clip4cad_gfa_v2 import CLIP4CAD_GFA_v2, GFAv2Config
+from .clip4cad_gfa_v2_4 import CLIP4CAD_GFA_v2_4, GFAv2_4Config
+from .clip4cad_gfa_v4 import CLIP4CAD_GFA_v4, GFAv4Config
+from .clip4cad_gfa_v4_2 import CLIP4CAD_GFA_v4_2, GFAv4_2Config, get_cond_dropout
 from .hierarchical_compression import HierarchicalCompressionModule
 from .text_encoder import HierarchicalTextEncoder
 from .reconstruction_decoder import ReconstructionDecoder
@@ -24,6 +28,15 @@ __all__ = [
     # Main models
     "CLIP4CAD_H",
     "CLIP4CAD_GFA",
+    "CLIP4CAD_GFA_v2",
+    "GFAv2Config",
+    "CLIP4CAD_GFA_v2_4",
+    "GFAv2_4Config",
+    "CLIP4CAD_GFA_v4",
+    "GFAv4Config",
+    "CLIP4CAD_GFA_v4_2",
+    "GFAv4_2Config",
+    "get_cond_dropout",
     # Components
     "HierarchicalCompressionModule",
     "HierarchicalTextEncoder",
