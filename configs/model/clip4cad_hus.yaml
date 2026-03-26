@@ -1,0 +1,149 @@
+# CLIP4CAD-HUS Model Configuration
+# Hierarchical Unified Space for CAD Multimodal Learning
+
+# ============================================================================
+# Core Dimensions
+# ============================================================================
+
+# Unified representation dimension (all modalities projected to this)
+d_unified: 256
+
+# Contrastive projection dimension (for InfoNCE losses)
+d_proj: 128
+
+# Hierarchical query configuration
+num_global: 8     # G=8 global queries (capture shape category)
+num_detail: 24    # M=24 detail queries (capture fine-grained features)
+
+# Attention configuration
+num_heads: 8      # Must divide d_unified (256 / 8 = 32)
+dropout: 0.1
+
+# ============================================================================
+# Key Differences from GFA
+# ============================================================================
+#
+# 1. No grounding matrices - queries attend directly to tokens
+# 2. 2 levels (Global + Detail) instead of single grounded features
+# 3. Text is an EQUAL modality (same pipeline as geometry)
+# 4. No self_ground_queries needed (queries work without text)
+# 5. 3-term loss instead of 8-term loss
+# ============================================================================
+
+# ============================================================================
+# Temperature Initialization
+# ============================================================================
+
+# Learnable temperatures per level
+tau_global_init: 0.07    # Global level (coarse discrimination)
+tau_detail_init: 0.05    # Detail level (fine-grained discrimination)
+tau_unified_init: 0.07   # Unified (final retrieval embedding)
+
+# ============================================================================
+# Encoder Configurations (Pre-computed Features - Same as GFA)
+# ============================================================================
+
+encoders:
+  # B-Rep encoder (AutoBrep-style FSQ VAE)
+  brep:
+    face_dim: 48  # 3 * 16 (surfZ dimension)
+    edge_dim: 12  # 3 * 4 (edgeZ dimension)
+    max_faces: 192
+    max_edges: 512
+    use_cached_features: true
+
+  # Point cloud encoder (ShapeLLM pre-computed)
+  pointcloud:
+    model: shapellm_precomputed
+    output_dim: 1024
+    num_tokens: 48  # 32 local + 16 global
+    use_cached_features: true
+
+  # Text encoder (Phi-4-mini pre-computed)
+  text:
+    model_name: microsoft/Phi-4-mini-instruct
+    hidden_dim: 3072
+    max_desc_len: 256
+    use_cached_embeddings: true
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Two-stage training (simplified from GFA)
+  num_epochs_stage1: 15   # Learn unified space
+  num_epochs_stage2: 20   # Fine-grained with hard negatives
+  # Total: 35 epochs (same as GFA)
+
+  # Optimization - AGGRESSIVE LR for faster convergence
+  batch_size: 64
+  learning_rate: 3.0e-4   # 3x higher - faster convergence
+  weight_decay: 0.01      # Low to allow faster learning
+  warmup_epochs: 2        # Slightly longer warmup for stability with high LR
+  min_lr: 1.0e-6
+  max_grad_norm: 1.0
+
+  # Stage 2 learning rate reduction
+  stage2_lr_factor: 0.3   # Reduce to ~1e-4 for fine-tuning
+
+  # Loss weights - UNIFIED-DOMINANT (what retrieval actually uses!)
+  # Global and detail are mild regularizers to ensure hierarchy exists
+  lambda_unified: 1.0     # PRIMARY - this is the retrieval embedding
+  lambda_global: 0.2      # Mild regularizer for coarse structure
+  lambda_detail: 0.2      # Mild regularizer for fine-grained
+  label_smoothing: 0.05   # Light smoothing (0.1 was too much)
+  # Stage 2 weights (applied via set_stage2_weights)
+  lambda_unified_stage2: 1.0   # Still primary
+  lambda_global_stage2: 0.1    # Reduce further
+  lambda_detail_stage2: 0.5    # Increase for hard negatives
+
+  # Hard negative mining (uses DETAIL embeddings, not unified)
+  hard_neg_k: 20
+  hard_neg_text_threshold: 0.8
+  hard_neg_embedding_key: z_brep_detail  # Mine using detail embeddings!
+
+  # Data loading (memory-mapped recommended)
+  num_workers: 0  # Use 0 for GFAMappedDataset
+  pin_memory: true
+
+  # Logging and checkpointing
+  log_every: 100
+  save_every: 5
+  validate_every: 5
+  use_wandb: false
+
+  # Hardware optimization
+  empty_cache_every_epoch: true
+
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
+
+evaluation:
+  # Retrieval tasks
+  tasks:
+    - text_to_brep
+    - text_to_pc
+    - brep_to_pc
+    - pc_to_brep
+
+  # Metrics
+  metrics:
+    - recall@1
+    - recall@5
+    - recall@10
+    - mrr
+
+  # Batch size for evaluation
+  batch_size: 128
+
+# ============================================================================
+# Data Paths (Updated in notebook/script)
+# ============================================================================
+
+data:
+  data_root: d:/Defect_Det/MMCAD/data
+  pc_file: c:/Users/User/Desktop/pc_embeddings_full.h5
+  brep_file: c:/Users/User/Desktop/brep_features.h5
+  text_files: c:/Users/User/Desktop/text_splits/

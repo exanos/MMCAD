@@ -83,10 +83,12 @@ class GFATrainer:
             # Loss weights
             "lambda_global": 1.0,
             "lambda_local": 0.5,
-            "lambda_consist": 0.5,
+            "lambda_consist_brep": 0.08,  # Asymmetric: B-Rep needs stronger grounding
+            "lambda_consist_pc": 0.02,    # PC already has multimodal features
             "lambda_diverse": 0.2,
             "lambda_conf_reg": 0.1,
             "lambda_global_stage1": 0.2,
+            "lambda_self_consist": 0.1,   # Self-grounding consistency (trains self_ground_queries)
 
             # Hard negative mining
             "hard_neg_k": 20,
@@ -141,10 +143,12 @@ class GFATrainer:
         self.criterion = GFALoss(
             lambda_global=self.config["lambda_global"],
             lambda_local=self.config["lambda_local"],
-            lambda_consist=self.config["lambda_consist"],
+            lambda_consist_brep=self.config.get("lambda_consist_brep", 0.08),
+            lambda_consist_pc=self.config.get("lambda_consist_pc", 0.02),
             lambda_diverse=self.config["lambda_diverse"],
             lambda_conf_reg=self.config["lambda_conf_reg"],
             lambda_global_stage1=self.config["lambda_global_stage1"],
+            lambda_self_consist=self.config.get("lambda_self_consist", 0.1),
         )
 
     def _init_dataloader(self):
@@ -318,10 +322,12 @@ class GFATrainer:
             "total": 0.0,
             "global": 0.0,
             "local": 0.0,
-            "consistency": 0.0,
+            "consistency_brep": 0.0,
+            "consistency_pc": 0.0,
             "diversity": 0.0,
             "conf_reg": 0.0,
             "conf_floor": 0.0,
+            "self_consist": 0.0,
         }
         num_batches = 0
 
@@ -365,9 +371,9 @@ class GFATrainer:
                 "loss": f"{loss_dict['total']:.3f}",
                 "G": f"{loss_dict['global']:.3f}",
                 "L": f"{loss_dict['local']:.3f}",
-                "C": f"{loss_dict['consistency']:.3f}",
-                "D": f"{loss_dict['diversity']:.3f}",
-                "cf": f"{loss_dict.get('conf_floor', 0):.3f}",
+                "Cb": f"{loss_dict['consistency_brep']:.3f}",
+                "Cp": f"{loss_dict['consistency_pc']:.3f}",
+                "SC": f"{loss_dict.get('self_consist', 0):.3f}",
                 "lr": f"{self.scheduler.get_last_lr()[0]:.1e}",
             })
 
@@ -406,9 +412,11 @@ class GFATrainer:
             "total": 0.0,
             "global": 0.0,
             "local": 0.0,
-            "consistency": 0.0,
+            "consistency_brep": 0.0,
+            "consistency_pc": 0.0,
             "diversity": 0.0,
             "conf_floor": 0.0,
+            "self_consist": 0.0,
         }
         num_batches = 0
 
@@ -440,8 +448,10 @@ class GFATrainer:
                     "train/loss": loss_dict["total"],
                     "train/global_loss": loss_dict["global"],
                     "train/local_loss": loss_dict["local"],
-                    "train/consistency_loss": loss_dict["consistency"],
+                    "train/consistency_brep_loss": loss_dict["consistency_brep"],
+                    "train/consistency_pc_loss": loss_dict["consistency_pc"],
                     "train/diversity_loss": loss_dict["diversity"],
+                    "train/self_consist_loss": loss_dict.get("self_consist", 0),
                     "train/lr": self.scheduler.get_last_lr()[0],
                     "step": self.global_step,
                 })
@@ -459,9 +469,11 @@ class GFATrainer:
         print(f"  Train Loss: {train_metrics['total']:.4f}")
         print(f"    Global: {train_metrics['global']:.4f}")
         print(f"    Local: {train_metrics['local']:.4f}")
-        print(f"    Consistency: {train_metrics['consistency']:.4f}")
+        print(f"    Consistency B-Rep: {train_metrics['consistency_brep']:.4f}")
+        print(f"    Consistency PC: {train_metrics['consistency_pc']:.4f}")
         print(f"    Diversity: {train_metrics['diversity']:.4f}")
         print(f"    Conf Floor: {train_metrics.get('conf_floor', 0):.4f}")
+        print(f"    Self-Consist: {train_metrics.get('self_consist', 0):.4f}")
 
         if val_metrics:
             print(f"  Val Loss: {val_metrics['total']:.4f}")

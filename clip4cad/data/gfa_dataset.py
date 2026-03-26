@@ -527,6 +527,13 @@ def gfa_collate_fn(batch: List[Dict], tokenizer=None, max_text_len: int = 512) -
             if key in batch[0]:
                 collated[key] = torch.stack([s[key] for s in batch])
 
+        # Topology fields (AutoBrep)
+        topology_keys = ["edge_to_faces", "bfs_level", "face_centroids",
+                         "face_normals", "face_areas", "edge_midpoints", "edge_lengths"]
+        for key in topology_keys:
+            if key in batch[0]:
+                collated[key] = torch.stack([s[key] for s in batch])
+
     # PC features
     if any(has_pc) and "pc_features" in batch[0]:
         collated["pc_features"] = torch.stack([s["pc_features"] for s in batch])
@@ -681,6 +688,9 @@ class GFAMappedDataset(Dataset):
         load_to_memory: bool = False,
         use_live_text: bool = False,
         csv_path: Optional[str] = None,
+        use_autobrep: bool = False,
+        autobrep_dir: Optional[str] = None,
+        max_samples: Optional[int] = None,
     ):
         """
         Args:
@@ -694,27 +704,43 @@ class GFAMappedDataset(Dataset):
             load_to_memory: If True, load B-Rep and PC to RAM for fast access
             use_live_text: If True, load raw text from CSV for train-time encoding
             csv_path: Path to CSV file with uid, title, description columns
+            use_autobrep: If True, use AutoBrep files with topology (edge_to_faces, bfs_level, etc.)
+            autobrep_dir: Directory containing train_brep_autobrep.h5 and val_brep_autobrep.h5
+            max_samples: Maximum number of samples to load (None = all)
         """
         self.data_root = Path(data_root)
         self.split = split
         self.num_rotations = num_rotations
         self.load_to_memory = load_to_memory
         self.use_live_text = use_live_text
+        self.use_autobrep = use_autobrep
 
         # Initialize file handles early to avoid AttributeError in __del__
         self._data = None
         self._brep_file = None
         self._text_file = None
         self._pc_file = None
+        self._autobrep_files = {}  # Cache for AutoBrep file handles
         self._using_presplit_text = False  # Track if using pre-split text file
+
+        # AutoBrep directory
+        if autobrep_dir is None:
+            autobrep_dir = self.data_root / "embeddings"
+        self.autobrep_dir = Path(autobrep_dir)
 
         # Mapping directory (default: data_root/aligned)
         if mapping_dir is None:
             mapping_dir = self.data_root / "aligned"
         self.mapping_dir = Path(mapping_dir)
 
-        # Load UID mapping
-        mapping_file = self.mapping_dir / "uid_mapping.json"
+        # Load UID mapping (use autobrep version if available and requested)
+        if use_autobrep:
+            mapping_file = self.mapping_dir / "uid_mapping_autobrep.json"
+            if not mapping_file.exists():
+                mapping_file = self.mapping_dir / "uid_mapping.json"
+                print(f"  Warning: uid_mapping_autobrep.json not found, using uid_mapping.json")
+        else:
+            mapping_file = self.mapping_dir / "uid_mapping.json"
         if not mapping_file.exists():
             raise FileNotFoundError(f"Mapping file not found: {mapping_file}")
 
@@ -731,6 +757,20 @@ class GFAMappedDataset(Dataset):
             raise FileNotFoundError(f"Split file not found: {split_file}")
 
         self.sample_ids = np.loadtxt(split_file, dtype=int).tolist()
+
+        # Filter to samples with valid AutoBrep mapping
+        if use_autobrep:
+            valid_ids = [uid for uid in self.sample_ids
+                        if uid in self.uid_mapping and self.uid_mapping[uid].get('autobrep_idx') is not None]
+            if len(valid_ids) < len(self.sample_ids):
+                print(f"  Filtered to {len(valid_ids)} samples with AutoBrep data (from {len(self.sample_ids)})")
+            self.sample_ids = valid_ids
+
+        # Limit samples if requested
+        if max_samples is not None and max_samples < len(self.sample_ids):
+            print(f"  Limiting to {max_samples} samples (from {len(self.sample_ids)})")
+            self.sample_ids = self.sample_ids[:max_samples]
+
         self.num_samples = len(self.sample_ids)
 
         # Store file paths
@@ -796,24 +836,28 @@ class GFAMappedDataset(Dataset):
         n = self.num_samples
 
         # Build index arrays
-        brep_indices = np.array([self.uid_mapping[uid]['brep_idx'] for uid in self.sample_ids])
         pc_indices = np.array([self.uid_mapping[uid]['pc_idx'] for uid in self.sample_ids])
 
-        # Load B-Rep (~3GB)
-        print("    Loading B-Rep (3GB)...")
-        with h5py.File(self.brep_path, 'r') as f:
-            all_face = f['face_features'][:]
-            all_edge = f['edge_features'][:]
-            all_face_mask = f['face_masks'][:]
-            all_edge_mask = f['edge_masks'][:]
+        # Load B-Rep - use AutoBrep with topology if requested
+        if self.use_autobrep:
+            print("    Loading AutoBrep with topology...")
+            self._data = self._load_autobrep_to_memory()
+        else:
+            brep_indices = np.array([self.uid_mapping[uid]['brep_idx'] for uid in self.sample_ids])
+            print("    Loading B-Rep (3GB)...")
+            with h5py.File(self.brep_path, 'r') as f:
+                all_face = f['face_features'][:]
+                all_edge = f['edge_features'][:]
+                all_face_mask = f['face_masks'][:]
+                all_edge_mask = f['edge_masks'][:]
 
-        self._data = {
-            'face_features': all_face[brep_indices].astype(np.float32),
-            'edge_features': all_edge[brep_indices].astype(np.float32),
-            'face_masks': all_face_mask[brep_indices].astype(np.float32),
-            'edge_masks': all_edge_mask[brep_indices].astype(np.float32),
-        }
-        del all_face, all_edge, all_face_mask, all_edge_mask
+            self._data = {
+                'face_features': all_face[brep_indices].astype(np.float32),
+                'edge_features': all_edge[brep_indices].astype(np.float32),
+                'face_masks': all_face_mask[brep_indices].astype(np.float32),
+                'edge_masks': all_edge_mask[brep_indices].astype(np.float32),
+            }
+            del all_face, all_edge, all_face_mask, all_edge_mask
 
         # Load PC (~50GB)
         print("    Loading PC (50GB)...")
@@ -930,6 +974,154 @@ class GFAMappedDataset(Dataset):
         total_gb = sum(arr.nbytes for arr in self._data.values()) / 1e9
         print(f"  ✓ Loaded {n} samples: {total_gb:.1f}GB in RAM (B-Rep + PC + Text)")
 
+    def _load_autobrep_to_memory(self) -> Dict[str, np.ndarray]:
+        """Load AutoBrep features with topology to memory using bulk loading."""
+        import time
+        start = time.time()
+        n = self.num_samples
+
+        # Group samples by which AutoBrep file they come from
+        train_dataset_idx = []  # index in output array
+        train_autobrep_idx = []  # index in autobrep file
+        val_dataset_idx = []
+        val_autobrep_idx = []
+        skipped = 0
+
+        for i, uid in enumerate(self.sample_ids):
+            info = self.uid_mapping[uid]
+            autobrep_idx = info.get('autobrep_idx')
+            autobrep_file = info.get('autobrep_file')
+
+            if autobrep_idx is None:
+                skipped += 1
+                continue
+
+            if autobrep_file == 'train':
+                train_dataset_idx.append(i)
+                train_autobrep_idx.append(autobrep_idx)
+            elif autobrep_file == 'val':
+                val_dataset_idx.append(i)
+                val_autobrep_idx.append(autobrep_idx)
+
+        if skipped > 0:
+            print(f"    Warning: {skipped} samples have no AutoBrep data")
+
+        # Pre-allocate output arrays (fixed sizes: 192 faces, 512 edges)
+        max_faces, max_edges = 192, 512
+        d_face, d_edge = 48, 12
+
+        data = {
+            'face_features': np.zeros((n, max_faces, d_face), dtype=np.float32),
+            'edge_features': np.zeros((n, max_edges, d_edge), dtype=np.float32),
+            'face_masks': np.zeros((n, max_faces), dtype=np.float32),
+            'edge_masks': np.zeros((n, max_edges), dtype=np.float32),
+            'edge_to_faces': np.zeros((n, max_edges, 2), dtype=np.int32),
+            'bfs_level': np.zeros((n, max_faces), dtype=np.int32),
+            'face_centroids': np.zeros((n, max_faces, 3), dtype=np.float32),
+            # Optional spatial fields (added by augment_spatial_fields.py)
+            'face_normals': np.zeros((n, max_faces, 3), dtype=np.float32),
+            'face_areas': np.zeros((n, max_faces), dtype=np.float32),
+            'edge_midpoints': np.zeros((n, max_edges, 3), dtype=np.float32),
+            'edge_lengths': np.zeros((n, max_edges), dtype=np.float32),
+        }
+        has_spatial_fields = False  # Track if HDF5 has the new fields
+
+        # BULK LOAD from train file
+        if train_autobrep_idx:
+            train_path = self.autobrep_dir / "train_brep_autobrep.h5"
+            print(f"    Loading {len(train_autobrep_idx)} samples from train_brep_autobrep.h5...")
+            with h5py.File(train_path, 'r') as f:
+                # Load entire arrays at once
+                all_face = f['face_features'][:]
+                all_edge = f['edge_features'][:]
+                all_face_mask = f['face_masks'][:]
+                all_edge_mask = f['edge_masks'][:]
+                all_edge_to_faces = f['edge_to_faces'][:]
+                all_bfs_level = f['bfs_level'][:]
+                all_face_centroids = f['face_centroids'][:]
+
+                # Check for optional spatial fields
+                train_has_spatial = 'face_normals' in f
+                if train_has_spatial:
+                    has_spatial_fields = True
+                    all_face_normals = f['face_normals'][:]
+                    all_face_areas = f['face_areas'][:]
+                    all_edge_midpoints = f['edge_midpoints'][:]
+                    all_edge_lengths = f['edge_lengths'][:]
+
+            # Fancy index into output
+            train_autobrep_idx = np.array(train_autobrep_idx)
+            train_dataset_idx = np.array(train_dataset_idx)
+
+            data['face_features'][train_dataset_idx] = all_face[train_autobrep_idx]
+            data['edge_features'][train_dataset_idx] = all_edge[train_autobrep_idx]
+            data['face_masks'][train_dataset_idx] = all_face_mask[train_autobrep_idx]
+            data['edge_masks'][train_dataset_idx] = all_edge_mask[train_autobrep_idx]
+            data['edge_to_faces'][train_dataset_idx] = all_edge_to_faces[train_autobrep_idx]
+            data['bfs_level'][train_dataset_idx] = all_bfs_level[train_autobrep_idx]
+            data['face_centroids'][train_dataset_idx] = all_face_centroids[train_autobrep_idx]
+
+            if train_has_spatial:
+                data['face_normals'][train_dataset_idx] = all_face_normals[train_autobrep_idx]
+                data['face_areas'][train_dataset_idx] = all_face_areas[train_autobrep_idx]
+                data['edge_midpoints'][train_dataset_idx] = all_edge_midpoints[train_autobrep_idx]
+                data['edge_lengths'][train_dataset_idx] = all_edge_lengths[train_autobrep_idx]
+                del all_face_normals, all_face_areas, all_edge_midpoints, all_edge_lengths
+
+            del all_face, all_edge, all_face_mask, all_edge_mask
+            del all_edge_to_faces, all_bfs_level, all_face_centroids
+            print(f"      Done ({len(train_autobrep_idx)} samples)")
+
+        # BULK LOAD from val file
+        if val_autobrep_idx:
+            val_path = self.autobrep_dir / "val_brep_autobrep.h5"
+            print(f"    Loading {len(val_autobrep_idx)} samples from val_brep_autobrep.h5...")
+            with h5py.File(val_path, 'r') as f:
+                all_face = f['face_features'][:]
+                all_edge = f['edge_features'][:]
+                all_face_mask = f['face_masks'][:]
+                all_edge_mask = f['edge_masks'][:]
+                all_edge_to_faces = f['edge_to_faces'][:]
+                all_bfs_level = f['bfs_level'][:]
+                all_face_centroids = f['face_centroids'][:]
+
+                # Check for optional spatial fields
+                val_has_spatial = 'face_normals' in f
+                if val_has_spatial:
+                    has_spatial_fields = True
+                    all_face_normals = f['face_normals'][:]
+                    all_face_areas = f['face_areas'][:]
+                    all_edge_midpoints = f['edge_midpoints'][:]
+                    all_edge_lengths = f['edge_lengths'][:]
+
+            val_autobrep_idx = np.array(val_autobrep_idx)
+            val_dataset_idx = np.array(val_dataset_idx)
+
+            data['face_features'][val_dataset_idx] = all_face[val_autobrep_idx]
+            data['edge_features'][val_dataset_idx] = all_edge[val_autobrep_idx]
+            data['face_masks'][val_dataset_idx] = all_face_mask[val_autobrep_idx]
+            data['edge_masks'][val_dataset_idx] = all_edge_mask[val_autobrep_idx]
+            data['edge_to_faces'][val_dataset_idx] = all_edge_to_faces[val_autobrep_idx]
+            data['bfs_level'][val_dataset_idx] = all_bfs_level[val_autobrep_idx]
+            data['face_centroids'][val_dataset_idx] = all_face_centroids[val_autobrep_idx]
+
+            if val_has_spatial:
+                data['face_normals'][val_dataset_idx] = all_face_normals[val_autobrep_idx]
+                data['face_areas'][val_dataset_idx] = all_face_areas[val_autobrep_idx]
+                data['edge_midpoints'][val_dataset_idx] = all_edge_midpoints[val_autobrep_idx]
+                data['edge_lengths'][val_dataset_idx] = all_edge_lengths[val_autobrep_idx]
+                del all_face_normals, all_face_areas, all_edge_midpoints, all_edge_lengths
+
+            del all_face, all_edge, all_face_mask, all_edge_mask
+            del all_edge_to_faces, all_bfs_level, all_face_centroids
+            print(f"      Done ({len(val_autobrep_idx)} samples)")
+
+        elapsed = time.time() - start
+        total_gb = sum(arr.nbytes for arr in data.values()) / 1e9
+        print(f"    AutoBrep loaded: {total_gb:.1f}GB in {elapsed:.1f}s")
+
+        return data
+
     def _load_text_csv(self, csv_path):
         """Load raw text from CSV for train-time encoding."""
         import pandas as pd
@@ -956,6 +1148,14 @@ class GFAMappedDataset(Dataset):
         """Open HDF5 files lazily (for non-memory mode)."""
         if self._brep_file is None:
             self._brep_file = h5py.File(self.brep_path, "r")
+        # Open AutoBrep files if needed (for topology fields)
+        if self.use_autobrep and not self._autobrep_files:
+            train_path = self.autobrep_dir / "train_brep_autobrep.h5"
+            val_path = self.autobrep_dir / "val_brep_autobrep.h5"
+            if train_path.exists():
+                self._autobrep_files['train'] = h5py.File(train_path, "r")
+            if val_path.exists():
+                self._autobrep_files['val'] = h5py.File(val_path, "r")
         if self._text_file is None and not self.use_live_text:
             # Check for pre-split file first (same logic as _load_to_memory)
             text_path = Path(self.text_path)
@@ -1005,6 +1205,17 @@ class GFAMappedDataset(Dataset):
             output["brep_edge_mask"] = torch.from_numpy(self._data['edge_masks'][idx])
             output["pc_features"] = torch.from_numpy(self._data['pc_features'][idx])
 
+            # Topology fields (AutoBrep only)
+            if self.use_autobrep and 'edge_to_faces' in self._data:
+                output["edge_to_faces"] = torch.from_numpy(self._data['edge_to_faces'][idx])
+                output["bfs_level"] = torch.from_numpy(self._data['bfs_level'][idx])
+                output["face_centroids"] = torch.from_numpy(self._data['face_centroids'][idx])
+                # Optional spatial fields
+                output["face_normals"] = torch.from_numpy(self._data['face_normals'][idx])
+                output["face_areas"] = torch.from_numpy(self._data['face_areas'][idx])
+                output["edge_midpoints"] = torch.from_numpy(self._data['edge_midpoints'][idx])
+                output["edge_lengths"] = torch.from_numpy(self._data['edge_lengths'][idx])
+
             # Text: read from RAM (FP16, autocast handles conversion in forward pass)
             if not self.use_live_text:
                 output["desc_embedding"] = torch.from_numpy(self._data['text_embeddings'][idx])
@@ -1033,6 +1244,36 @@ class GFAMappedDataset(Dataset):
             global_tok = self._pc_file["global_token"][pc_idx]
             pc_features = np.concatenate([local_feat, global_tok], axis=0)
             output["pc_features"] = torch.from_numpy(pc_features.astype(np.float32))
+
+            # Topology fields from AutoBrep (on-disk mode)
+            if self.use_autobrep and self._autobrep_files:
+                autobrep_idx = mapping.get('autobrep_idx')
+                autobrep_file = mapping.get('autobrep_file')
+                if autobrep_idx is not None and autobrep_file in self._autobrep_files:
+                    f = self._autobrep_files[autobrep_file]
+                    output["edge_to_faces"] = torch.from_numpy(
+                        f['edge_to_faces'][autobrep_idx].astype(np.int32)
+                    )
+                    output["bfs_level"] = torch.from_numpy(
+                        f['bfs_level'][autobrep_idx].astype(np.int32)
+                    )
+                    output["face_centroids"] = torch.from_numpy(
+                        f['face_centroids'][autobrep_idx].astype(np.float32)
+                    )
+                    # Optional spatial fields
+                    if 'face_normals' in f:
+                        output["face_normals"] = torch.from_numpy(
+                            f['face_normals'][autobrep_idx].astype(np.float32)
+                        )
+                        output["face_areas"] = torch.from_numpy(
+                            f['face_areas'][autobrep_idx].astype(np.float32)
+                        )
+                        output["edge_midpoints"] = torch.from_numpy(
+                            f['edge_midpoints'][autobrep_idx].astype(np.float32)
+                        )
+                        output["edge_lengths"] = torch.from_numpy(
+                            f['edge_lengths'][autobrep_idx].astype(np.float32)
+                        )
 
             # Text: skip reading from disk if using live text encoding
             if not self.use_live_text:
@@ -1081,6 +1322,10 @@ class GFAMappedDataset(Dataset):
         if self._pc_file is not None:
             self._pc_file.close()
             self._pc_file = None
+        # Close AutoBrep files
+        for f in self._autobrep_files.values():
+            f.close()
+        self._autobrep_files = {}
 
     def __del__(self):
         self.close()

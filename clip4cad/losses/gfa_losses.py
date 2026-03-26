@@ -31,30 +31,46 @@ class GFALoss(nn.Module):
         self,
         lambda_global: float = 1.0,
         lambda_local: float = 0.5,
-        lambda_consist: float = 0.5,
+        lambda_consist: float = None,  # Deprecated: use lambda_consist_brep/pc
+        lambda_consist_brep: float = 0.08,
+        lambda_consist_pc: float = 0.02,
         lambda_diverse: float = 0.2,
         lambda_conf_reg: float = 0.1,
         lambda_global_stage1: float = 0.2,
+        lambda_self_consist: float = 0.1,  # Self-grounding consistency loss
         confidence_threshold: float = 0.3,
     ):
         """
         Args:
             lambda_global: Weight for global contrastive loss
             lambda_local: Weight for local (per-slot) contrastive loss
-            lambda_consist: Weight for grounding consistency loss
+            lambda_consist: DEPRECATED - use lambda_consist_brep/pc instead
+            lambda_consist_brep: Weight for B-Rep grounding consistency (needs stronger grounding)
+            lambda_consist_pc: Weight for PC grounding consistency (already has multimodal features)
             lambda_diverse: Weight for grounding diversity loss
             lambda_conf_reg: Weight for confidence regularization
             lambda_global_stage1: Reduced global weight for stage 1
+            lambda_self_consist: Weight for self-grounding consistency loss
             confidence_threshold: Threshold for active feature slots
         """
         super().__init__()
 
         self.lambda_global = lambda_global
         self.lambda_local = lambda_local
-        self.lambda_consist = lambda_consist
+
+        # Asymmetric grounding consistency weights
+        # Backward compat: if old lambda_consist is provided, use it for both
+        if lambda_consist is not None:
+            self.lambda_consist_brep = lambda_consist
+            self.lambda_consist_pc = lambda_consist
+        else:
+            self.lambda_consist_brep = lambda_consist_brep
+            self.lambda_consist_pc = lambda_consist_pc
+
         self.lambda_diverse = lambda_diverse
         self.lambda_conf_reg = lambda_conf_reg
         self.lambda_global_stage1 = lambda_global_stage1
+        self.lambda_self_consist = lambda_self_consist
         self.confidence_threshold = confidence_threshold
 
     def get_active_slots(
@@ -229,39 +245,59 @@ class GFALoss(nn.Module):
         self,
         F_brep_aligned: Optional[torch.Tensor],
         F_pc_aligned: Optional[torch.Tensor],
+        T_feat: torch.Tensor,
         confidence: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Cross-modal grounding consistency in aligned space.
+        Asymmetric grounding consistency: each modality grounded to text.
 
-        For each active feature slot, the aligned B-Rep grounded features
-        should match the aligned point cloud grounded features.
+        Instead of enforcing B-Rep ↔ PC consistency, we measure how well each
+        modality's grounded features align with the text feature slots.
+
+        This allows asymmetric weighting:
+        - B-Rep needs stronger grounding (pure geometry, no multimodal pretraining)
+        - PC needs less (ShapeLLM already has multimodal features)
+
+        Args:
+            F_brep_aligned: B-Rep aligned features, (B, K, d_align)
+            F_pc_aligned: PC aligned features, (B, K, d_align)
+            T_feat: Text feature slots, (B, K, d)
+            confidence: Slot confidences, (B, K)
+
+        Returns:
+            loss_brep: B-Rep to text consistency loss
+            loss_pc: Point Cloud to text consistency loss
         """
         device = confidence.device
-
-        if F_brep_aligned is None or F_pc_aligned is None:
-            return torch.tensor(0.0, device=device)
-
         active_mask, _ = self.get_active_slots(confidence)
 
-        # Normalize aligned features
-        F_brep_norm = F.normalize(F_brep_aligned, dim=-1)
-        F_pc_norm = F.normalize(F_pc_aligned, dim=-1)
+        # Normalize text features (anchor)
+        T_feat_norm = F.normalize(T_feat, dim=-1)
 
-        # Cosine similarity between corresponding slots
-        similarity = (F_brep_norm * F_pc_norm).sum(dim=-1)  # (B, K)
+        def compute_modality_loss(F_aligned: Optional[torch.Tensor]) -> torch.Tensor:
+            """Compute alignment loss between modality features and text."""
+            if F_aligned is None:
+                return torch.tensor(0.0, device=device)
 
-        # Mask inactive slots and weight by confidence
-        weighted_sim = similarity * confidence * active_mask.float()
-        weight_sum = (confidence * active_mask.float()).sum(dim=-1).clamp(min=1e-8)
+            F_norm = F.normalize(F_aligned, dim=-1)
 
-        # Mean similarity per sample
-        mean_sim = weighted_sim.sum(dim=-1) / weight_sum
+            # Cosine similarity between aligned features and text slots
+            similarity = (F_norm * T_feat_norm).sum(dim=-1)  # (B, K)
 
-        # Loss: want similarity close to 1
-        loss = (1 - mean_sim).mean()
+            # Mask inactive slots and weight by confidence
+            weighted_sim = similarity * confidence * active_mask.float()
+            weight_sum = (confidence * active_mask.float()).sum(dim=-1).clamp(min=1e-8)
 
-        return loss
+            # Mean similarity per sample
+            mean_sim = weighted_sim.sum(dim=-1) / weight_sum
+
+            # Loss: want similarity close to 1
+            return (1 - mean_sim).mean()
+
+        loss_brep = compute_modality_loss(F_brep_aligned)
+        loss_pc = compute_modality_loss(F_pc_aligned)
+
+        return loss_brep, loss_pc
 
     def grounding_diversity_loss(
         self,
@@ -371,9 +407,14 @@ class GFALoss(nn.Module):
         F_brep_local = outputs.get("F_brep_local")
         F_pc_local = outputs.get("F_pc_local")
 
-        # Grounding losses (always active)
-        losses["consistency"] = self.grounding_consistency_loss(
-            F_brep_aligned, F_pc_aligned, confidence
+        # Text features for asymmetric grounding
+        T_feat = outputs.get("T_feat")
+        if T_feat is None:
+            raise ValueError("T_feat required for grounding consistency loss")
+
+        # Grounding losses (asymmetric: separate brep/pc consistency)
+        losses["consistency_brep"], losses["consistency_pc"] = self.grounding_consistency_loss(
+            F_brep_aligned, F_pc_aligned, T_feat, confidence
         )
 
         losses["diversity"] = self.grounding_diversity_loss(
@@ -396,6 +437,11 @@ class GFALoss(nn.Module):
         # Confidence floor loss (prevents collapse)
         losses["conf_floor"] = self.confidence_floor_loss(confidence, min_mean=0.3)
 
+        # Self-grounding consistency loss (trains self_ground_queries to match text-grounded importance)
+        # This is computed in the model and passed through outputs
+        L_self_consist = outputs.get("L_self_consist", torch.tensor(0.0, device=device))
+        losses["self_consist"] = L_self_consist
+
         # Combine based on training stage
         lambda_conf_floor = 0.5  # Weight for confidence floor loss
 
@@ -404,20 +450,24 @@ class GFALoss(nn.Module):
             total_loss = (
                 self.lambda_global_stage1 * losses["global"] +
                 self.lambda_local * losses["local"] +
-                self.lambda_consist * losses["consistency"] +
+                self.lambda_consist_brep * losses["consistency_brep"] +
+                self.lambda_consist_pc * losses["consistency_pc"] +
                 self.lambda_diverse * losses["diversity"] +
                 self.lambda_conf_reg * losses["conf_reg"] +
-                lambda_conf_floor * losses["conf_floor"]
+                lambda_conf_floor * losses["conf_floor"] +
+                self.lambda_self_consist * losses["self_consist"]
             )
         else:
             # Stage 2: Full training
             total_loss = (
                 self.lambda_global * losses["global"] +
                 self.lambda_local * losses["local"] +
-                self.lambda_consist * losses["consistency"] +
+                self.lambda_consist_brep * losses["consistency_brep"] +
+                self.lambda_consist_pc * losses["consistency_pc"] +
                 self.lambda_diverse * losses["diversity"] +
                 self.lambda_conf_reg * losses["conf_reg"] +
-                lambda_conf_floor * losses["conf_floor"]
+                lambda_conf_floor * losses["conf_floor"] +
+                self.lambda_self_consist * losses["self_consist"]
             )
 
         losses["total"] = total_loss

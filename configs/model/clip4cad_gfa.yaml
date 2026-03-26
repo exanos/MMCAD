@@ -159,9 +159,16 @@ training:
   # Loss weights
   lambda_global: 1.0        # Global contrastive loss
   lambda_local: 0.5         # Local (per-slot) contrastive loss
-  lambda_consist: 0.5       # Grounding consistency loss
+
+  # Asymmetric grounding consistency (text-anchored)
+  # B-Rep needs stronger grounding (pure geometry, no multimodal pretraining)
+  # PC needs less grounding (ShapeLLM already has multimodal features)
+  lambda_consist_brep: 0.08
+  lambda_consist_pc: 0.02
+
   lambda_diverse: 0.2       # Grounding diversity loss
   lambda_conf_reg: 0.1      # Confidence regularization
+  lambda_self_consist: 0.1  # Self-grounding consistency (trains self_ground_queries)
 
   # Stage 1 uses reduced global loss weight
   lambda_global_stage1: 0.2
