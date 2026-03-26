@@ -1,0 +1,113 @@
+# CLIP4CAD-GFA v4 Configuration
+# Slot Attention with Query Distillation
+#
+# Key changes from v2.4:
+# - Replace SelfQueryGenerator with SlotAttentionQueryGenerator
+# - Separate slot attention per modality (BRep, PC)
+# - Query distillation (L_query): Direct cosine supervision Q_self → T_feat
+# - Attention distillation (L_attn): KL divergence on attention patterns
+# - λ_query = 1.5 (Stage 1) - THE KEY FIX!
+
+# ============================================================================
+# Model Dimensions
+# ============================================================================
+
+d_face: 48          # AutoBrep face features
+d_edge: 12          # AutoBrep edge features
+d_pc: 1024          # ShapeLLM features
+d_text: 3072        # Phi-4-mini features
+d_unified: 256      # Internal dimension
+d_proj: 128         # Projection head output
+d_ground: 128       # Grounding projection dimension
+
+# ============================================================================
+# Architecture Parameters
+# ============================================================================
+
+num_slots: 12                 # Feature parsing slots (K)
+num_detail_queries: 8         # Hierarchical detail queries
+num_heads: 8                  # Attention heads
+num_parser_layers: 2          # Text parser transformer layers
+num_slot_iterations: 3        # Slot attention iterations (NEW)
+slot_hidden_dim: 512          # Slot attention MLP dim (d*2)
+dropout: 0.1
+
+# Max sequence lengths
+max_faces: 192
+max_edges: 512
+max_pc_tokens: 33
+
+# Temperature initialization
+tau_init: 0.07
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Stage 1: Heavy Query Distillation (Epochs 1-15)
+  # Focus on forcing Q_self to match T_feat
+  stage1_epochs: 15
+  stage1_lr: 3.0e-5
+  stage1_lambda_self: 0.05        # Very low - don't let self compete early
+  stage1_lambda_query: 1.5        # HIGH - THE KEY FIX!
+  stage1_lambda_attn: 0.5         # Medium - attention patterns
+  stage1_lambda_embed: 0.3        # Medium - embedding alignment
+  stage1_lambda_detail: 0.0       # Disabled
+
+  # Stage 2: Balanced Training (Epochs 16-35)
+  # Increase self weight, add detail loss with hard negatives
+  stage2_epochs: 20
+  stage2_lr: 1.0e-5
+  stage2_lambda_self: 0.3
+  stage2_lambda_query: 0.8        # Still important
+  stage2_lambda_attn: 0.3
+  stage2_lambda_embed: 0.3
+  stage2_lambda_detail: 0.3
+
+  # General training
+  batch_size: 512               # Large batch for contrastive
+  warmup_epochs: 3              # Longer warmup for stability
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  min_lr: 1.0e-6
+
+  # Hard negative mining
+  hard_negative_k: 10
+  mine_every_n_epochs: 5
+
+  # Logging and checkpointing
+  log_every: 100
+  save_every: 5
+  eval_every: 5
+
+  # Hardware optimization
+  empty_cache_every_epoch: true
+  gradient_checkpointing: false
+
+# ============================================================================
+# Data Paths (override in notebook/training script)
+# ============================================================================
+
+data:
+  data_root: d:/Defect_Det/MMCAD/data
+  pc_file: c:/Users/User/Desktop/pc_embeddings_full.h5
+  brep_file: c:/Users/User/Desktop/brep_features.h5
+  text_file: c:/Users/User/Desktop/text_embeddings.h5
+
+# ============================================================================
+# Success Criteria
+# ============================================================================
+
+targets:
+  # Stage 1 (Epoch 15)
+  stage1_query_loss: 0.3          # Query distillation should be low
+  stage1_self_cosine: 0.70        # Should improve significantly
+  stage1_text_brep_r1_guided: 0.55
+
+  # Stage 2 (Epoch 35)
+  stage2_query_loss: 0.15         # Query alignment should be excellent
+  stage2_self_cosine: 0.85        # High due to query distillation
+  stage2_text_brep_r1_guided: 0.60
+  stage2_text_brep_r1_self: 0.55  # Self should be close to guided!
+  stage2_gap: 0.05                # Gap < 5% between guided and self

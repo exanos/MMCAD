@@ -1,0 +1,1020 @@
+# GFA v4.9: Direct Contrastive Alignment (No Codebook)
+
+## Why v4.8.2 Failed: The Codebook Bottleneck
+
+```
+Your training logs tell the full story:
+
+  Stage 1 Epoch 15:  Cos(B) = 0.985  but  R@1 = 0.0%
+  
+  This means: ALL pairs have ~0.985 cosine, not just true pairs.
+  The model cannot distinguish sample A from sample B.
+
+Root cause: The codebook acts as an information bottleneck.
+
+  137,000 unique CAD models
+          │
+          ▼
+  1040 codes, sparse top-k → ~15 active per sample
+          │
+          ▼
+  z = weighted_sum(active_codes)
+          │
+          ▼
+  Most models → nearly identical z
+  
+  A gear and a shaft both activate "cylindrical" + "planar" codes.
+  The codebook captures WHAT TYPE but not WHICH INSTANCE.
+  Retrieval needs instance discrimination. Codebook destroys it.
+```
+
+**Evidence from your contrastive loss:**
+- Initial: ~5.55 (= ln(256), random chance)
+- After 15 epochs: ~4.7 (barely improved)
+- For reference, a working model drops to ~1.0-2.0
+
+The codebook prevents the contrastive loss from learning discrimination.
+
+**The gap-closing paper itself says:** *"the modality gap has limited impact on
+instance-wise tasks (e.g., retrieval)"*. We were solving the wrong problem.
+
+---
+
+## What Actually Works (Evidence)
+
+| Method | Approach | R@1 |
+|--------|----------|-----|
+| CLIP | Encoder → Pool → Project → InfoNCE | Works |
+| ULIP | 3-way CLIP (text, image, PC) | Works |
+| Our v3 guided path | Text-guided cross-attention → InfoNCE | 74.7% |
+| Our v4.8.2 | Codebook grounding → InfoNCE | 0.0% |
+
+Every working method: **direct contrastive alignment, no intermediate codebook.**
+
+---
+
+## GFA v4.9 Architecture
+
+### Design Principles
+
+1. **No codebook.** The bottleneck that killed retrieval.
+2. **Attention pooling.** Learnable queries capture multiple aspects of each input.
+3. **Strong contrastive loss.** InfoNCE with proper temperature is ALL you need for retrieval.
+4. **Staged training.** Keep Stage 0 PC-anchoring (it works).
+5. **Minimal losses.** Don't fight yourself with 7 competing objectives.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         GFA v4.9 Architecture                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  INPUTS                                                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                 │
+│  │ BRep (AutoBrep)│  │ PC (ShapeLLM)│  │ Text (Phi-4) │                 │
+│  │ faces: (F,48) │  │ local:(N,1024)│  │ tokens:(L,3072)│                │
+│  │ edges: (E,12) │  │ global:(1024)│  │              │                 │
+│  │ edge_to_faces │  │              │  │              │                 │
+│  │ bfs_level     │  │              │  │              │                 │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                 │
+│         │                 │                 │                          │
+│         ▼                 ▼                 ▼                          │
+│  ┌─────────────────────────────────────────────────────────────┐      │
+│  │                    MODALITY ENCODERS                         │      │
+│  │                                                              │      │
+│  │  BRep Encoder          PC Encoder       Text Encoder         │      │
+│  │  ┌─────────────┐      ┌──────────┐     ┌──────────────┐    │      │
+│  │  │ face_proj    │      │ 2-layer  │     │ proj(3072→d) │    │      │
+│  │  │ edge_proj    │      │ MLP      │     │ 2-layer TF   │    │      │
+│  │  │ bfs_level_emb│      │(1024→d)  │     │              │    │      │
+│  │  │ 3× MsgPass   │      │          │     │              │    │      │
+│  │  │ 4-layer TF   │      │          │     │              │    │      │
+│  │  └──────┬──────┘      └────┬─────┘     └──────┬───────┘    │      │
+│  │         │                  │                   │            │      │
+│  │    X_brep (N,d)       X_pc (49,d)        X_text (L,d)      │      │
+│  └─────────┼──────────────────┼───────────────────┼────────────┘      │
+│            │                  │                   │                    │
+│            ▼                  ▼                   ▼                    │
+│  ┌─────────────────────────────────────────────────────────────┐      │
+│  │               ATTENTION POOLING (per modality)              │      │
+│  │                                                              │      │
+│  │  K=8 learnable queries cross-attend to encoder tokens       │      │
+│  │                                                              │      │
+│  │  queries (K,d) × tokens (N,d) → attention → pool → (d,)    │      │
+│  │                                                              │      │
+│  │  BRep pool: Q_brep attends to X_brep → z_brep_raw (d)      │      │
+│  │  PC pool:   Q_pc attends to X_pc     → z_pc_raw (d)        │      │
+│  │  Text pool: Q_text attends to X_text → z_text_raw (d)      │      │
+│  └─────────┼──────────────────┼───────────────────┼────────────┘      │
+│            │                  │                   │                    │
+│            ▼                  ▼                   ▼                    │
+│  ┌─────────────────────────────────────────────────────────────┐      │
+│  │              PROJECTION HEADS (per modality)                │      │
+│  │                                                              │      │
+│  │  brep_proj: Linear(d,d) → GELU → Linear(d, d_proj)         │      │
+│  │  pc_proj:   Linear(d,d) → GELU → Linear(d, d_proj)         │      │
+│  │  text_proj: Linear(d,d) → GELU → Linear(d, d_proj)         │      │
+│  │                                                              │      │
+│  │  → z_text (d_proj)    → z_brep (d_proj)    → z_pc (d_proj) │      │
+│  └─────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  LOSS: InfoNCE(z_text, z_brep, z_pc)                                  │
+│                                                                         │
+│  That's it. No codebook. No gap-closing. No curriculum.               │
+│  Just strong contrastive alignment.                                    │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Training Stages
+
+```
+STAGE 0: ANCHOR (8 epochs)
+══════════════════════════
+  BRep encoder → AttentionPool → z_brep
+       ↕ InfoNCE + MSE
+  PC encoder (frozen) → AttentionPool → z_pc
+  
+  Goal: BRep-PC cosine > 0.7
+  LR: 3e-4, warmup 1 epoch
+
+STAGE 1: FULL ALIGNMENT (20 epochs)
+════════════════════════════════════
+  Text → z_text ─┐
+  BRep → z_brep ─┼─ 3-way InfoNCE
+  PC   → z_pc   ─┘
+  
+  Goal: R@1 > 20% by epoch 10, > 50% by epoch 20
+  LR: 1e-4, warmup 2 epochs
+
+STAGE 2 (OPTIONAL): FINE-TUNING (5 epochs)
+═══════════════════════════════════════════
+  Same as Stage 1 + hard negative mining
+  LR: 2e-5
+```
+
+---
+
+## Complete Implementation
+
+```python
+"""
+CLIP4CAD GFA v4.9 - Direct Contrastive Alignment
+No codebook. No gap-closing. Just strong encoders + InfoNCE.
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from dataclasses import dataclass
+from typing import Optional, Dict, Tuple
+
+
+@dataclass
+class GFAv49Config:
+    # Input dimensions
+    d_face: int = 48
+    d_edge: int = 12
+    d_pc: int = 1024
+    d_text: int = 3072
+    
+    # Model dimensions
+    d: int = 256          # Internal dimension
+    d_proj: int = 128     # Output embedding dimension
+    
+    # BRep encoder
+    num_msg_layers: int = 3
+    num_brep_tf_layers: int = 4
+    num_heads: int = 8
+    dropout: float = 0.1
+    max_bfs_levels: int = 32
+    
+    # Text encoder
+    num_text_tf_layers: int = 2
+    
+    # Attention pooling
+    num_pool_queries: int = 8
+    
+    # Contrastive
+    init_tau: float = 0.07
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ATTENTION POOLING
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AttentionPooling(nn.Module):
+    """
+    Learnable queries cross-attend to tokens, then mean-pool.
+    
+    This replaces the codebook. Key differences:
+    - Queries are CONTINUOUS, not discrete codes
+    - Output preserves instance-level information
+    - No sparse selection = no information loss
+    """
+    
+    def __init__(self, d: int, num_queries: int = 8, num_heads: int = 8):
+        super().__init__()
+        self.queries = nn.Parameter(torch.randn(num_queries, d) * 0.02)
+        self.cross_attn = nn.MultiheadAttention(
+            d, num_heads, dropout=0.1, batch_first=True
+        )
+        self.norm1 = nn.LayerNorm(d)
+        self.ffn = nn.Sequential(
+            nn.Linear(d, d * 4),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(d * 4, d),
+            nn.Dropout(0.1)
+        )
+        self.norm2 = nn.LayerNorm(d)
+    
+    def forward(self, X: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            X: (B, N, d) encoder tokens
+            mask: (B, N) valid token mask (True = valid)
+        Returns:
+            z: (B, d) pooled representation
+        """
+        B = X.shape[0]
+        Q = self.queries.unsqueeze(0).expand(B, -1, -1)  # (B, K, d)
+        
+        # Key padding mask for MHA: True = IGNORE (opposite of our convention)
+        key_padding_mask = ~mask if mask is not None else None
+        
+        # Cross-attention: queries attend to tokens
+        attn_out, _ = self.cross_attn(
+            Q, X, X, key_padding_mask=key_padding_mask
+        )
+        Q = self.norm1(Q + attn_out)
+        Q = self.norm2(Q + self.ffn(Q))
+        
+        # Mean pool queries to single vector
+        z = Q.mean(dim=1)  # (B, d)
+        return z
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BREP ENCODER (topology-aware, kept from v4.8)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EdgeMessageLayer(nn.Module):
+    """Bidirectional message passing through BRep topology."""
+    
+    def __init__(self, d: int, dropout: float = 0.1):
+        super().__init__()
+        # Face → Edge: aggregate from two connected faces
+        self.face_to_edge = nn.Sequential(
+            nn.Linear(d * 3, d * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d * 2, d)
+        )
+        # Edge → Face: aggregate from incident edges
+        self.edge_to_face = nn.Sequential(
+            nn.Linear(d * 2, d * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d * 2, d)
+        )
+        self.norm_f = nn.LayerNorm(d)
+        self.norm_e = nn.LayerNorm(d)
+        
+        # Gated residuals
+        self.gate_f = nn.Sequential(nn.Linear(d * 2, d), nn.Sigmoid())
+        self.gate_e = nn.Sequential(nn.Linear(d * 2, d), nn.Sigmoid())
+    
+    def forward(self, F, E, edge_to_faces, face_mask, edge_mask):
+        B, N_e, d = E.shape
+        N_f = F.shape[1]
+        
+        f1_idx = edge_to_faces[:, :, 0].clamp(0, N_f - 1)
+        f2_idx = edge_to_faces[:, :, 1].clamp(0, N_f - 1)
+        
+        # Gather connected faces for each edge
+        f1 = torch.gather(F, 1, f1_idx.unsqueeze(-1).expand(-1, -1, d))
+        f2 = torch.gather(F, 1, f2_idx.unsqueeze(-1).expand(-1, -1, d))
+        
+        # Face → Edge
+        msg_e = self.face_to_edge(torch.cat([E, f1, f2], dim=-1))
+        gate_e = self.gate_e(torch.cat([E, msg_e], dim=-1))
+        E_new = self.norm_e(E + gate_e * msg_e)
+        
+        # Edge → Face (scatter-add)
+        face_msg = torch.zeros_like(F)
+        face_count = torch.zeros(B, N_f, 1, device=F.device)
+        
+        E_expand = E_new
+        ones = torch.ones(B, N_e, 1, device=F.device)
+        
+        face_msg.scatter_add_(1, f1_idx.unsqueeze(-1).expand(-1, -1, d), E_expand)
+        face_msg.scatter_add_(1, f2_idx.unsqueeze(-1).expand(-1, -1, d), E_expand)
+        face_count.scatter_add_(1, f1_idx.unsqueeze(-1), ones)
+        face_count.scatter_add_(1, f2_idx.unsqueeze(-1), ones)
+        face_msg = face_msg / face_count.clamp(min=1)
+        
+        msg_f = self.edge_to_face(torch.cat([F, face_msg], dim=-1))
+        gate_f = self.gate_f(torch.cat([F, msg_f], dim=-1))
+        F_new = self.norm_f(F + gate_f * msg_f)
+        
+        return F_new, E_new
+
+
+class TopologyBRepEncoder(nn.Module):
+    """
+    Topology-aware BRep encoder.
+    
+    Uses: face_features, edge_features, edge_to_faces, bfs_level
+    Does NOT use: centroids, normals, areas (redundant with FSQ features)
+    """
+    
+    def __init__(self, config: GFAv49Config):
+        super().__init__()
+        d = config.d
+        
+        # Geometry projection
+        self.face_proj = nn.Sequential(
+            nn.Linear(config.d_face, d),
+            nn.LayerNorm(d),
+            nn.GELU(),
+            nn.Dropout(config.dropout)
+        )
+        self.edge_proj = nn.Sequential(
+            nn.Linear(config.d_edge, d),
+            nn.LayerNorm(d),
+            nn.GELU(),
+            nn.Dropout(config.dropout)
+        )
+        
+        # Type embeddings
+        self.face_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
+        self.edge_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
+        
+        # BFS level embedding
+        self.level_emb = nn.Embedding(config.max_bfs_levels, d)
+        
+        # Message passing
+        self.msg_layers = nn.ModuleList([
+            EdgeMessageLayer(d, config.dropout)
+            for _ in range(config.num_msg_layers)
+        ])
+        
+        # Transformer (Pre-LN for training stability)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d,
+            nhead=config.num_heads,
+            dim_feedforward=d * 4,
+            dropout=config.dropout,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True  # Pre-LN
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.num_brep_tf_layers,
+            enable_nested_tensor=False
+        )
+        self.final_norm = nn.LayerNorm(d)
+    
+    def forward(self, face_feats, edge_feats, face_mask, edge_mask,
+                edge_to_faces, bfs_level):
+        # Project
+        F = self.face_proj(face_feats) + self.face_type
+        E = self.edge_proj(edge_feats) + self.edge_type
+        
+        # Add BFS level info to faces
+        F = F + self.level_emb(bfs_level.clamp(0, 31))
+        
+        # Message passing through topology
+        for layer in self.msg_layers:
+            F, E = layer(F, E, edge_to_faces, face_mask, edge_mask)
+        
+        # Concatenate and transform
+        X = torch.cat([F, E], dim=1)  # (B, N_f + N_e, d)
+        mask = torch.cat([face_mask, edge_mask], dim=1)
+        
+        X = self.transformer(X, src_key_padding_mask=~mask)
+        X = self.final_norm(X)
+        
+        return X, mask
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TEXT AND PC ENCODERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TextEncoder(nn.Module):
+    def __init__(self, config: GFAv49Config):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(config.d_text, config.d),
+            nn.LayerNorm(config.d)
+        )
+        encoder_layer = nn.TransformerEncoderLayer(
+            config.d, config.num_heads, config.d * 4,
+            config.dropout, 'gelu', batch_first=True, norm_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=config.num_text_tf_layers,
+            enable_nested_tensor=False
+        )
+        self.norm = nn.LayerNorm(config.d)
+    
+    def forward(self, X, mask=None):
+        X = self.proj(X)
+        pad_mask = ~mask if mask is not None else None
+        X = self.encoder(X, src_key_padding_mask=pad_mask)
+        return self.norm(X), mask
+
+
+class PCEncoder(nn.Module):
+    def __init__(self, config: GFAv49Config):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(config.d_pc, config.d),
+            nn.LayerNorm(config.d),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.d, config.d),
+            nn.LayerNorm(config.d)
+        )
+    
+    def forward(self, pc_local, pc_global):
+        # pc_local: (B, N, 1024), pc_global: (B, 1024)
+        X = torch.cat([pc_local, pc_global.unsqueeze(1)], dim=1)
+        return self.proj(X)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN MODEL
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CLIP4CAD_GFA_v49(nn.Module):
+    """
+    GFA v4.9: Direct contrastive alignment.
+    
+    Architecture:
+        Encoder → AttentionPool → Projection → InfoNCE
+    
+    No codebook. No gap-closing. No curriculum.
+    """
+    
+    def __init__(self, config: GFAv49Config):
+        super().__init__()
+        self.config = config
+        d = config.d
+        
+        # ─── Encoders ────────────────────────────────────────────────
+        self.brep_encoder = TopologyBRepEncoder(config)
+        self.text_encoder = TextEncoder(config)
+        self.pc_encoder = PCEncoder(config)
+        
+        # ─── Attention Pooling (per modality) ────────────────────────
+        self.brep_pool = AttentionPooling(d, config.num_pool_queries, config.num_heads)
+        self.text_pool = AttentionPooling(d, config.num_pool_queries, config.num_heads)
+        self.pc_pool = AttentionPooling(d, config.num_pool_queries, config.num_heads)
+        
+        # ─── Projection Heads (per modality) ─────────────────────────
+        # Separate heads give each encoder freedom to organize its space
+        self.brep_proj = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(), nn.Linear(d, config.d_proj)
+        )
+        self.text_proj = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(), nn.Linear(d, config.d_proj)
+        )
+        self.pc_proj = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(), nn.Linear(d, config.d_proj)
+        )
+        
+        # ─── Temperature ─────────────────────────────────────────────
+        self.log_tau = nn.Parameter(torch.log(torch.tensor(config.init_tau)))
+    
+    @property
+    def tau(self):
+        return self.log_tau.exp().clamp(0.01, 0.5)
+    
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+    def freeze_pc_encoder(self):
+        for p in self.pc_encoder.parameters():
+            p.requires_grad = False
+        for p in self.pc_pool.parameters():
+            p.requires_grad = False
+    
+    def unfreeze_pc_encoder(self):
+        for p in self.pc_encoder.parameters():
+            p.requires_grad = True
+        for p in self.pc_pool.parameters():
+            p.requires_grad = True
+    
+    # ─── STAGE 0: BRep-PC alignment ─────────────────────────────────
+    
+    def forward_stage0(self, batch):
+        """Stage 0: Anchor BRep to PC. No text, no codebook."""
+        device = next(self.parameters()).device
+        
+        # Encode BRep
+        X_brep, brep_mask = self.brep_encoder(
+            batch['face_features'].to(device),
+            batch['edge_features'].to(device),
+            batch['face_mask'].to(device),
+            batch['edge_mask'].to(device),
+            batch['edge_to_faces'].to(device),
+            batch['bfs_level'].to(device),
+        )
+        
+        # Encode PC
+        X_pc = self.pc_encoder(
+            batch['pc_local_features'].to(device),
+            batch['pc_global_features'].to(device),
+        )
+        
+        # Pool
+        z_brep_raw = self.brep_pool(X_brep, brep_mask)
+        z_pc_raw = self.pc_pool(X_pc)
+        
+        # Project
+        z_brep = self.brep_proj(z_brep_raw)
+        z_pc = self.pc_proj(z_pc_raw)
+        
+        return {
+            'z_brep': z_brep,
+            'z_pc': z_pc,
+            'z_brep_raw': z_brep_raw,
+            'z_pc_raw': z_pc_raw,
+            'tau': self.tau,
+        }
+    
+    # ─── STAGE 1+: Full 3-way alignment ─────────────────────────────
+    
+    def forward(self, batch):
+        """Full forward: text + brep + pc."""
+        device = next(self.parameters()).device
+        
+        # ── Encode ──
+        X_text, text_mask = self.text_encoder(
+            batch['text_features'].to(device),
+            batch.get('text_mask', torch.ones(
+                batch['text_features'].shape[:2], dtype=torch.bool
+            )).to(device),
+        )
+        
+        X_brep, brep_mask = self.brep_encoder(
+            batch['face_features'].to(device),
+            batch['edge_features'].to(device),
+            batch['face_mask'].to(device),
+            batch['edge_mask'].to(device),
+            batch['edge_to_faces'].to(device),
+            batch['bfs_level'].to(device),
+        )
+        
+        X_pc = self.pc_encoder(
+            batch['pc_local_features'].to(device),
+            batch['pc_global_features'].to(device),
+        )
+        
+        # ── Pool ──
+        z_text_raw = self.text_pool(X_text, text_mask)
+        z_brep_raw = self.brep_pool(X_brep, brep_mask)
+        z_pc_raw = self.pc_pool(X_pc)
+        
+        # ── Project ──
+        z_text = self.text_proj(z_text_raw)
+        z_brep = self.brep_proj(z_brep_raw)
+        z_pc = self.pc_proj(z_pc_raw)
+        
+        return {
+            'z_text': z_text,
+            'z_brep': z_brep,
+            'z_pc': z_pc,
+            'tau': self.tau,
+        }
+    
+    # ─── Inference helpers ───────────────────────────────────────────
+    
+    def encode_text(self, batch):
+        X_text, text_mask = self.text_encoder(
+            batch['text_features'], batch.get('text_mask')
+        )
+        z = self.text_pool(X_text, text_mask)
+        return F.normalize(self.text_proj(z), dim=-1)
+    
+    def encode_brep(self, batch):
+        X_brep, brep_mask = self.brep_encoder(
+            batch['face_features'], batch['edge_features'],
+            batch['face_mask'], batch['edge_mask'],
+            batch['edge_to_faces'], batch['bfs_level'],
+        )
+        z = self.brep_pool(X_brep, brep_mask)
+        return F.normalize(self.brep_proj(z), dim=-1)
+    
+    def encode_pc(self, batch):
+        X_pc = self.pc_encoder(
+            batch['pc_local_features'], batch['pc_global_features']
+        )
+        z = self.pc_pool(X_pc)
+        return F.normalize(self.pc_proj(z), dim=-1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LOSS FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GFAv49Loss(nn.Module):
+    """
+    Simple, well-motivated loss functions.
+    
+    Stage 0: Symmetric InfoNCE (BRep ↔ PC)
+    Stage 1: 3-way symmetric InfoNCE (Text ↔ BRep ↔ PC)
+    Stage 2: Same + hard negative boosting
+    """
+    
+    def __init__(self, label_smoothing: float = 0.05):
+        super().__init__()
+        self.label_smoothing = label_smoothing
+    
+    def forward(self, outputs, stage: int = 1, hard_negatives=None):
+        if stage == 0:
+            return self._stage0(outputs)
+        else:
+            return self._stage1(outputs, hard_negatives)
+    
+    def _stage0(self, outputs):
+        """BRep ↔ PC symmetric InfoNCE."""
+        losses = {}
+        tau = outputs['tau']
+        
+        z_brep = F.normalize(outputs['z_brep'], dim=-1)
+        z_pc = F.normalize(outputs['z_pc'], dim=-1)
+        
+        losses['infonce'] = self._symmetric_infonce(z_brep, z_pc, tau)
+        
+        # Optional: cosine direction loss for stability
+        z_brep_raw = outputs['z_brep_raw']
+        z_pc_raw = outputs['z_pc_raw']
+        losses['cosine'] = (1 - F.cosine_similarity(z_brep_raw, z_pc_raw.detach(), dim=-1)).mean()
+        
+        losses['total'] = losses['infonce'] + 0.5 * losses['cosine']
+        return losses['total'], losses
+    
+    def _stage1(self, outputs, hard_negatives=None):
+        """3-way symmetric InfoNCE."""
+        losses = {}
+        tau = outputs['tau']
+        
+        z_text = F.normalize(outputs['z_text'], dim=-1)
+        z_brep = F.normalize(outputs['z_brep'], dim=-1)
+        z_pc = F.normalize(outputs['z_pc'], dim=-1)
+        
+        # 3-way InfoNCE
+        loss_tb = self._symmetric_infonce(z_text, z_brep, tau)
+        loss_tp = self._symmetric_infonce(z_text, z_pc, tau)
+        loss_bp = self._symmetric_infonce(z_brep, z_pc, tau)
+        
+        losses['text_brep'] = loss_tb
+        losses['text_pc'] = loss_tp
+        losses['brep_pc'] = loss_bp
+        losses['infonce'] = (loss_tb + loss_tp + loss_bp) / 3
+        
+        # Hard negative boosting (optional, Stage 2)
+        if hard_negatives is not None:
+            losses['hard_neg'] = self._hard_negative_infonce(
+                z_brep, z_text, hard_negatives, tau
+            )
+            losses['total'] = losses['infonce'] + 0.3 * losses['hard_neg']
+        else:
+            losses['total'] = losses['infonce']
+        
+        return losses['total'], losses
+    
+    def _symmetric_infonce(self, z_a, z_b, tau):
+        """Standard symmetric InfoNCE with label smoothing."""
+        B = z_a.shape[0]
+        logits = z_a @ z_b.T / tau  # (B, B)
+        labels = torch.arange(B, device=z_a.device)
+        
+        loss_ab = F.cross_entropy(logits, labels, label_smoothing=self.label_smoothing)
+        loss_ba = F.cross_entropy(logits.T, labels, label_smoothing=self.label_smoothing)
+        
+        return (loss_ab + loss_ba) / 2
+    
+    def _hard_negative_infonce(self, z_geo, z_text, hard_negatives, tau):
+        """InfoNCE with boosted hard negative logits."""
+        B = z_geo.shape[0]
+        logits = z_geo @ z_text.T / tau
+        labels = torch.arange(B, device=z_geo.device)
+        
+        # Boost hard negatives
+        for i, negs in enumerate(hard_negatives):
+            if negs is not None:
+                for neg_idx in negs:
+                    if 0 <= neg_idx < B and neg_idx != i:
+                        logits[i, neg_idx] *= 1.5
+        
+        return F.cross_entropy(logits, labels, label_smoothing=self.label_smoothing)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METRICS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@torch.no_grad()
+def compute_retrieval_metrics(z_query, z_gallery, ks=(1, 5, 10)):
+    """Compute R@K retrieval metrics."""
+    z_query = F.normalize(z_query, dim=-1)
+    z_gallery = F.normalize(z_gallery, dim=-1)
+    
+    sims = z_query @ z_gallery.T  # (N, N)
+    N = sims.shape[0]
+    
+    results = {}
+    for k in ks:
+        _, topk_indices = sims.topk(k, dim=1)
+        correct = (topk_indices == torch.arange(N, device=sims.device).unsqueeze(1)).any(dim=1)
+        results[f'R@{k}'] = correct.float().mean().item() * 100
+    
+    return results
+
+
+@torch.no_grad()
+def compute_contrastive_quality(z_a, z_b):
+    """
+    Check if contrastive learning is working.
+    
+    Returns:
+        mean_pos_sim: Mean similarity of TRUE pairs (should be HIGH)
+        mean_neg_sim: Mean similarity of FALSE pairs (should be LOW)
+        margin: pos - neg (should be POSITIVE and GROWING)
+    """
+    z_a = F.normalize(z_a, dim=-1)
+    z_b = F.normalize(z_b, dim=-1)
+    
+    sims = z_a @ z_b.T
+    B = sims.shape[0]
+    
+    # Positive pairs: diagonal
+    pos_mask = torch.eye(B, dtype=torch.bool, device=sims.device)
+    mean_pos = sims[pos_mask].mean().item()
+    
+    # Negative pairs: off-diagonal
+    neg_mask = ~pos_mask
+    mean_neg = sims[neg_mask].mean().item()
+    
+    return {
+        'pos_sim': mean_pos,
+        'neg_sim': mean_neg,
+        'margin': mean_pos - mean_neg,
+    }
+```
+
+---
+
+## Training Script
+
+```python
+"""
+Training GFA v4.9
+
+KEY MONITORING: Watch the MARGIN (pos_sim - neg_sim).
+If margin isn't growing, something is fundamentally wrong.
+If margin grows but R@1 is low, just need more epochs.
+"""
+
+import torch
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.cuda.amp import autocast, GradScaler
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Setup
+# ═══════════════════════════════════════════════════════════════════════════
+
+config = GFAv49Config(d=256, d_proj=128, num_pool_queries=8)
+model = CLIP4CAD_GFA_v49(config).cuda()
+criterion = GFAv49Loss(label_smoothing=0.05)
+scaler = GradScaler()
+
+print(f"Parameters: {model.count_parameters():,}")
+# Expected: ~10-12M (much less than v4.8.2's 15M)
+
+
+def make_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
+    warmup = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs * steps_per_epoch)
+    cosine = CosineAnnealingLR(optimizer, T_max=(total_epochs - warmup_epochs) * steps_per_epoch)
+    return SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_epochs * steps_per_epoch])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 0: Anchor BRep to PC
+# ═══════════════════════════════════════════════════════════════════════════
+
+print("=" * 60)
+print("STAGE 0: Anchoring BRep to PC")
+print("=" * 60)
+
+model.freeze_pc_encoder()
+optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                  lr=3e-4, weight_decay=0.01)
+scheduler = make_scheduler(optimizer, warmup_epochs=1, total_epochs=8,
+                           steps_per_epoch=len(train_loader))
+
+for epoch in range(1, 9):
+    model.train()
+    epoch_losses = []
+    epoch_margins = []
+    
+    for batch in train_loader:
+        with autocast(device_type='cuda'):
+            outputs = model.forward_stage0(batch)
+            loss, loss_dict = criterion(outputs, stage=0)
+        
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        scheduler.step()
+        
+        epoch_losses.append(loss_dict['total'].item())
+        
+        with torch.no_grad():
+            quality = compute_contrastive_quality(outputs['z_brep'], outputs['z_pc'])
+            epoch_margins.append(quality['margin'])
+    
+    avg_loss = sum(epoch_losses) / len(epoch_losses)
+    avg_margin = sum(epoch_margins) / len(epoch_margins)
+    
+    print(f"Epoch {epoch}: Loss={avg_loss:.4f}, "
+          f"Margin={avg_margin:.4f} "  # THIS IS THE KEY METRIC
+          f"(pos={quality['pos_sim']:.3f}, neg={quality['neg_sim']:.3f})")
+    
+    # *** CRITICAL CHECK ***
+    # By epoch 3, margin should be > 0.1
+    # By epoch 8, margin should be > 0.3
+    # If margin is ~0 or negative, something is wrong with the data pipeline
+
+torch.save(model.state_dict(), 'checkpoint_stage0.pt')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 1: Full 3-way alignment
+# ═══════════════════════════════════════════════════════════════════════════
+
+print("\n" + "=" * 60)
+print("STAGE 1: Full 3-way contrastive alignment")
+print("=" * 60)
+
+model.unfreeze_pc_encoder()
+optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+scheduler = make_scheduler(optimizer, warmup_epochs=2, total_epochs=20,
+                           steps_per_epoch=len(train_loader))
+
+for epoch in range(1, 21):
+    model.train()
+    epoch_losses = []
+    epoch_margins = {'tb': [], 'tp': [], 'bp': []}
+    
+    for batch in train_loader:
+        with autocast(device_type='cuda'):
+            outputs = model(batch)
+            loss, loss_dict = criterion(outputs, stage=1)
+        
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        scheduler.step()
+        
+        epoch_losses.append(loss_dict['total'].item())
+        
+        with torch.no_grad():
+            q_tb = compute_contrastive_quality(outputs['z_text'], outputs['z_brep'])
+            q_tp = compute_contrastive_quality(outputs['z_text'], outputs['z_pc'])
+            q_bp = compute_contrastive_quality(outputs['z_brep'], outputs['z_pc'])
+            epoch_margins['tb'].append(q_tb['margin'])
+            epoch_margins['tp'].append(q_tp['margin'])
+            epoch_margins['bp'].append(q_bp['margin'])
+    
+    avg_loss = sum(epoch_losses) / len(epoch_losses)
+    m_tb = sum(epoch_margins['tb']) / len(epoch_margins['tb'])
+    m_tp = sum(epoch_margins['tp']) / len(epoch_margins['tp'])
+    m_bp = sum(epoch_margins['bp']) / len(epoch_margins['bp'])
+    
+    print(f"Epoch {epoch}: Loss={avg_loss:.4f}, "
+          f"Margin T↔B={m_tb:.4f}, T↔P={m_tp:.4f}, B↔P={m_bp:.4f}")
+    
+    # Evaluate retrieval every 5 epochs
+    if epoch % 5 == 0:
+        model.eval()
+        all_z_text, all_z_brep, all_z_pc = [], [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                outputs = model(batch)
+                all_z_text.append(outputs['z_text'].cpu())
+                all_z_brep.append(outputs['z_brep'].cpu())
+                all_z_pc.append(outputs['z_pc'].cpu())
+        
+        z_text = torch.cat(all_z_text)
+        z_brep = torch.cat(all_z_brep)
+        z_pc = torch.cat(all_z_pc)
+        
+        r_tb = compute_retrieval_metrics(z_text, z_brep)
+        r_tp = compute_retrieval_metrics(z_text, z_pc)
+        r_bp = compute_retrieval_metrics(z_brep, z_pc)
+        
+        print(f"  Text→BRep: R@1={r_tb['R@1']:.1f}%, R@5={r_tb['R@5']:.1f}%")
+        print(f"  Text→PC:   R@1={r_tp['R@1']:.1f}%, R@5={r_tp['R@5']:.1f}%")
+        print(f"  BRep→PC:   R@1={r_bp['R@1']:.1f}%, R@5={r_bp['R@5']:.1f}%")
+
+torch.save(model.state_dict(), 'checkpoint_stage1.pt')
+```
+
+---
+
+## What to Monitor (and When to Worry)
+
+### The ONE metric that matters: **MARGIN**
+
+```
+margin = mean_positive_similarity - mean_negative_similarity
+
+Healthy training:
+  Epoch 1:  margin = 0.02  (barely above random)
+  Epoch 5:  margin = 0.15  (learning!)
+  Epoch 10: margin = 0.30  (good separation)
+  Epoch 20: margin = 0.50+ (strong discrimination)
+
+ALARM: margin stays near 0 for >3 epochs → model is collapsed
+```
+
+### Red Flags (from v4.8.2 that we're avoiding)
+
+| Symptom | Diagnosis | Our Fix |
+|---------|-----------|---------|
+| High cosine + 0% retrieval | All embeddings identical | No codebook bottleneck |
+| Contrastive loss barely drops | Can't discriminate | Direct pooling, no information loss |
+| Loss explodes in Stage 2 | Competing objectives | Single objective (InfoNCE) |
+| Gap decreasing but R@1 = 0 | Wrong metric to optimize | Don't optimize gap for retrieval |
+
+### Expected Timeline
+
+| Epoch | Loss | Margin | Text→BRep R@1 |
+|-------|------|--------|---------------|
+| Stage 0, ep 8 | ~3.0 | 0.3+ (BRep↔PC) | - |
+| Stage 1, ep 5 | ~4.0 | 0.1+ | ~5% |
+| Stage 1, ep 10 | ~3.0 | 0.2+ | ~20% |
+| Stage 1, ep 20 | ~2.0 | 0.4+ | ~40-60% |
+
+---
+
+## Why This Will Work
+
+1. **No information bottleneck.** Attention pooling preserves instance-level information.
+   The 8 queries capture different aspects, and nothing forces similar models to produce
+   identical representations.
+
+2. **Single clear objective.** InfoNCE says "make true pairs more similar than false pairs."
+   No competing losses pulling in different directions.
+
+3. **Proven approach.** This is exactly what CLIP, ULIP, and your own v3 guided path did.
+   The only difference is better BRep encoding (topology-aware).
+
+4. **Staged training handles cold start.** Stage 0 gives BRep a stable anchor.
+   Stage 1 adds text. No curriculum needed — the pre-trained text/PC encoders provide
+   a stable learning signal from the start.
+
+5. **Easy to debug.** If margin doesn't grow, the problem is in the data or BRep encoder,
+   not in a complex loss landscape with 7 terms.
+
+---
+
+## FAQ
+
+**Q: What about the modality gap?**
+A: The paper says it doesn't matter for retrieval. If you later need clustering,
+   add L_ATP + L_CU as a Stage 3. But get retrieval working first.
+
+**Q: What about self-grounding?**
+A: There's no separate self-path needed. z_brep is computed from geometry alone
+   and is aligned to z_text via contrastive loss. That IS self-grounding.
+
+**Q: What about the hierarchical codebook for interpretability?**
+A: Add it AFTER retrieval works. You can train a codebook on top of frozen
+   embeddings for analysis. Don't let it interfere with training.
+
+**Q: What if this still gives 0% R@1?**
+A: Then the problem is in the data pipeline (check that matched pairs are
+   actually matched) or BRep features (check AutoBrep quality). Monitor
+   the margin — it will tell you immediately if learning is happening.
+
+**Q: Isn't this too simple?**
+A: CLIP is "simple" and it works for billions of image-text pairs.
+   Complexity should be added only when simple approaches fail,
+   and only to address a specific diagnosed failure mode.

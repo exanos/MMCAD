@@ -1,0 +1,149 @@
+# CLIP4CAD-GFA v4.4 Configuration
+# Topology-Aware Multimodal Alignment
+#
+# Key innovations from v4:
+# 1. Topology message passing via edge_to_faces graph
+# 2. BFS-level hierarchical pattern aggregation
+# 3. Multi-source query generation (tokens + levels + global)
+# 4. Contrastive query loss for instance-level matching
+
+# ============================================================================
+# Model Dimensions
+# ============================================================================
+
+d_face: 48          # AutoBrep face features
+d_edge: 12          # AutoBrep edge features
+d_pc: 1024          # ShapeLLM features
+d_text: 3072        # Phi-4-mini features
+d_unified: 256      # Internal dimension
+d_proj: 128         # Projection head output
+d_ground: 128       # Grounding projection dimension
+
+# ============================================================================
+# Architecture Parameters
+# ============================================================================
+
+num_slots: 12                 # Feature parsing slots (K)
+num_detail_queries: 8         # Hierarchical detail queries
+num_heads: 8                  # Attention heads
+num_parser_layers: 2          # Text parser transformer layers
+dropout: 0.1
+
+# Topology encoder (Stage 1)
+num_msg_layers: 3             # Message passing layers
+num_brep_tf_layers: 4         # BRep transformer layers
+max_bfs_levels: 32            # Max BFS level for embedding
+
+# Pattern aggregator (Stage 2)
+num_pattern_levels: 10        # BFS levels to aggregate
+
+# Query generator (Stage 3)
+num_query_layers: 4           # Query decoder layers
+num_pc_query_layers: 2        # PC query layers (lighter)
+
+# Max sequence lengths
+max_faces: 192
+max_edges: 512
+max_pc_tokens: 33
+
+# Temperature initialization
+tau_init: 0.07
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Stage 1: Foundation Grounding (Epochs 1-15)
+  # Focus on alignment with heavy curriculum conditioning
+  stage1_epochs: 15
+  stage1_lr: 5.0e-5
+  stage1_weights:
+    lambda_self: 0.1
+    lambda_query_contrastive: 1.5    # Key innovation - instance-level matching
+    lambda_query_cosine: 0.3
+    lambda_embed: 0.3
+    lambda_grounding: 0.5
+    lambda_detail: 0.0
+
+  # Stage 2: Alignment Refinement (Epochs 16-35)
+  # Add hard negatives and reduce conditioning
+  stage2_epochs: 20
+  stage2_lr: 1.0e-5
+  stage2_weights:
+    lambda_self: 0.3
+    lambda_query_contrastive: 1.0
+    lambda_query_cosine: 0.3
+    lambda_embed: 0.3
+    lambda_grounding: 0.3
+    lambda_detail: 0.3
+
+  # Optimizer
+  optimizer:
+    type: adamw
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+
+  # Scheduler
+  warmup_epochs: 3
+  scheduler_type: cosine
+
+  # Batch size (smaller due to topology encoder)
+  batch_size: 128
+
+  # Gradient clipping
+  max_grad_norm: 1.0
+
+  # Hard negative mining
+  mine_every_n_epochs: 5
+  hard_neg_k: 20
+  text_sim_threshold: 0.8
+
+  # Curriculum schedule
+  # Gradually remove text conditioning hints
+  curriculum:
+    # Stage 1: 90% → 15% hints
+    stage1_schedule:
+      epoch_2: 0.1    # 90% hints
+      epoch_4: 0.2    # 80% hints
+      epoch_6: 0.35   # 65% hints
+      epoch_8: 0.5    # 50% hints
+      epoch_10: 0.65  # 35% hints
+      epoch_12: 0.75  # 25% hints
+      epoch_15: 0.85  # 15% hints
+
+    # Stage 2: 15% → 0% hints
+    stage2_schedule:
+      epoch_3: 0.85   # 15% hints
+      epoch_6: 0.92   # 8% hints
+      epoch_10: 0.97  # 3% hints
+      epoch_15: 1.0   # 0% hints
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+
+data:
+  # Required topology fields from AutoBrep HDF5
+  topology_fields:
+    - edge_to_faces      # (N_e, 2) - Face pairs for each edge
+    - face_centroids     # (N_f, 3) - Face centers
+    - face_normals       # (N_f, 3) - Face outward normals
+    - face_areas         # (N_f,) - Face surface areas
+    - bfs_level          # (N_f,) - BFS traversal level
+    - edge_midpoints     # (N_e, 3) - Edge midpoints
+    - edge_lengths       # (N_e,) - Edge arc lengths
+
+# ============================================================================
+# Expected Results
+# ============================================================================
+#
+# | Metric | Before (v4) | Expected (v4.4) |
+# |--------|-------------|-----------------|
+# | Self-cos BRep | 0.18 | 0.65-0.80 |
+# | Query Alignment | 0.78 | 0.85+ |
+# | Text→BRep R@1 (self) | ~8% | 40-60% |
+#
+# Key insight: Topology makes spatial patterns explicit, enabling
+# recognition of semantic features (teeth, bores, fillets) that
+# were hidden in the bag-of-tokens representation.

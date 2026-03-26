@@ -1,1 +1,46 @@
-"nul" 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and outputs
+outputs/
+notebooks/outputs/
+*.ckpt
+*.pth
+*.pt
+pretrained/
+
+# Temporary files
+*.tmp
+*.log
+nul
+tempout.txt
+tempinstr.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large external dependencies
+AutoBrep/

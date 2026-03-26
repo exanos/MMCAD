@@ -366,6 +366,13 @@ class CLIP4CAD_GFA(nn.Module):
             dropout=config.get("dropout", 0.1),
         )
 
+        self.align_text = AlignmentNetwork(
+            d_in=d_unified,
+            d_hidden=d_unified,
+            d_out=d_align,
+            dropout=config.get("dropout", 0.1),
+        )
+
         # =====================================================================
         # Fusion Layer
         # =====================================================================
@@ -937,6 +944,12 @@ class CLIP4CAD_GFA(nn.Module):
         outputs["confidence"] = confidence
         outputs["text_attn"] = text_attn
 
+        # Project T_feat to alignment space for asymmetric grounding consistency loss
+        # Keep T_feat in d_unified for grounding matrix computation, output aligned version
+        B_txt, K, d = T_feat.shape
+        T_feat_aligned = self.align_text(T_feat.reshape(B_txt * K, d)).reshape(B_txt, K, self.d_align)
+        outputs["T_feat"] = T_feat_aligned  # In d_align space (128) for consistency loss
+
         # Compute active slot mask with curriculum fallback
         active_mask = self.get_active_slots(confidence)
         outputs["active_mask"] = active_mask
@@ -1180,6 +1193,157 @@ class CLIP4CAD_GFA(nn.Module):
         z_geo_proj = self.global_proj_head(z_geo)
 
         return F.normalize(z_geo_proj, dim=-1)
+
+    # =========================================================================
+    # Phase 2 Self-Grounding Training Methods
+    # =========================================================================
+
+    def compute_text_grounded_embeddings(
+        self,
+        batch: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute text-grounded geometry embeddings (for Phase 2 targets).
+
+        This method computes z_brep and z_pc using text-parsed feature importance,
+        which serves as the target for self-grounding training.
+
+        Args:
+            batch: Batch dict with brep/pc/text features
+
+        Returns:
+            Dict with 'z_brep' and 'z_pc' embeddings (normalized)
+        """
+        device = next(self.parameters()).device
+        outputs = {}
+
+        # Get features from batch
+        brep_face = batch.get("brep_face_features")
+        brep_edge = batch.get("brep_edge_features")
+        brep_face_mask = batch.get("brep_face_mask")
+        brep_edge_mask = batch.get("brep_edge_mask")
+        pc_features = batch.get("pc_features")
+        text_features = batch.get("desc_embedding")
+        text_mask = batch.get("desc_mask")
+
+        # Project modalities
+        X_brep, brep_mask = None, None
+        X_pc = None
+
+        if brep_face is not None and brep_edge is not None:
+            brep_face = brep_face.to(device)
+            brep_edge = brep_edge.to(device)
+            brep_face_mask = brep_face_mask.to(device) if brep_face_mask is not None else None
+            brep_edge_mask = brep_edge_mask.to(device) if brep_edge_mask is not None else None
+            X_brep, brep_mask = self.projection.project_brep(
+                brep_face, brep_edge, brep_face_mask, brep_edge_mask
+            )
+
+        if pc_features is not None:
+            pc_features = pc_features.to(device)
+            X_pc = self.projection.project_pointcloud(pc_features)
+
+        if text_features is not None:
+            text_features = text_features.to(device)
+            text_mask = text_mask.to(device) if text_mask is not None else None
+            X_text = self.projection.project_text(text_features)
+
+            # Parse text into feature mentions with confidence
+            T_feat, confidence, _ = self.parse_text_features(X_text, text_mask)
+
+            # Compute text-grounded importance for B-Rep
+            if X_brep is not None:
+                G_brep = self.compute_grounding_matrix(T_feat, X_brep, brep_mask, modality="brep")
+                imp_brep = self.compute_semantic_importance(G_brep, confidence, brep_mask)
+                z_brep = torch.sum(imp_brep.unsqueeze(-1) * X_brep, dim=1)
+                z_brep_proj = self.global_proj_head(z_brep)
+                outputs["z_brep"] = F.normalize(z_brep_proj, dim=-1)
+
+            # Compute text-grounded importance for PC
+            if X_pc is not None:
+                G_pc = self.compute_grounding_matrix(T_feat, X_pc, None, modality="pc")
+                imp_pc = self.compute_semantic_importance(G_pc, confidence, None)
+                z_pc = torch.sum(imp_pc.unsqueeze(-1) * X_pc, dim=1)
+                z_pc_proj = self.global_proj_head(z_pc)
+                outputs["z_pc"] = F.normalize(z_pc_proj, dim=-1)
+
+        return outputs
+
+    def compute_self_grounded_embeddings(
+        self,
+        batch: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute self-grounded geometry embeddings (trainable in Phase 2).
+
+        This method computes z_brep and z_pc using self_ground_queries instead
+        of text features. Used for Phase 2 self-grounding training where only
+        self_ground_queries is trainable.
+
+        NOTE: Unlike encode_geometry(), this method does NOT use @torch.no_grad()
+        so gradients flow through self_ground_queries.
+
+        Args:
+            batch: Batch dict with brep/pc features
+
+        Returns:
+            Dict with 'z_brep' and 'z_pc' embeddings (normalized)
+        """
+        device = next(self.parameters()).device
+        outputs = {}
+
+        # Get features from batch
+        brep_face = batch.get("brep_face_features")
+        brep_edge = batch.get("brep_edge_features")
+        brep_face_mask = batch.get("brep_face_mask")
+        brep_edge_mask = batch.get("brep_edge_mask")
+        pc_features = batch.get("pc_features")
+
+        # B-Rep self-grounding
+        if brep_face is not None and brep_edge is not None:
+            brep_face = brep_face.to(device)
+            brep_edge = brep_edge.to(device)
+            brep_face_mask = brep_face_mask.to(device) if brep_face_mask is not None else None
+            brep_edge_mask = brep_edge_mask.to(device) if brep_edge_mask is not None else None
+
+            X_brep, brep_mask = self.projection.project_brep(
+                brep_face, brep_edge, brep_face_mask, brep_edge_mask
+            )
+            B = X_brep.shape[0]
+
+            # Use self-grounding queries (trainable in Phase 2)
+            queries = self.self_ground_queries.unsqueeze(0).expand(B, -1, -1)
+            G_self = self.compute_grounding_matrix(queries, X_brep, brep_mask, modality="brep")
+
+            # Importance-weighted aggregation (uniform across slots)
+            importance = G_self.sum(dim=1)  # (B, N)
+            if brep_mask is not None:
+                importance = importance * brep_mask.float()
+            importance = importance / importance.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+            z_brep = torch.sum(importance.unsqueeze(-1) * X_brep, dim=1)
+            z_brep_proj = self.global_proj_head(z_brep)
+            outputs["z_brep"] = F.normalize(z_brep_proj, dim=-1)
+
+        # PC self-grounding
+        if pc_features is not None:
+            pc_features = pc_features.to(device)
+            X_pc = self.projection.project_pointcloud(pc_features)
+            B = X_pc.shape[0]
+
+            # Use self-grounding queries (trainable in Phase 2)
+            queries = self.self_ground_queries.unsqueeze(0).expand(B, -1, -1)
+            G_self = self.compute_grounding_matrix(queries, X_pc, None, modality="pc")
+
+            # Importance-weighted aggregation (uniform across slots)
+            importance = G_self.sum(dim=1)  # (B, N)
+            importance = importance / importance.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+            z_pc = torch.sum(importance.unsqueeze(-1) * X_pc, dim=1)
+            z_pc_proj = self.global_proj_head(z_pc)
+            outputs["z_pc"] = F.normalize(z_pc_proj, dim=-1)
+
+        return outputs
 
     def count_parameters(self, trainable_only: bool = False) -> int:
         """Count model parameters."""

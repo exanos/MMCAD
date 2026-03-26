@@ -7,7 +7,26 @@
       "Bash(dir:*)",
       "Bash(powershell -Command \"\\(Get-Content ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\169k.csv''\\).Count\")",
       "Bash(powershell -Command \"\\(Get-ChildItem ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\abc_ply_organized'' -Filter ''*.ply''\\).Count\")",
-      "Bash(powershell -Command \"\\(Get-ChildItem ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\extracted_step_files'' -Filter ''*.step''\\).Count\")"
+      "Bash(powershell -Command \"\\(Get-ChildItem ''D:\\\\Defect_Det\\\\MMCAD\\\\data\\\\extracted_step_files'' -Filter ''*.step''\\).Count\")",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(powershell -Command \"\\(Get-ChildItem ''d:\\\\Defect_Det\\\\MMCAD\\\\data\\\\missing_uids_step_files\\\\*.step''\\).Count\")",
+      "Bash(ls:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\User\\\\Desktop\" -Filter \"*.h5\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(jupyter nbconvert:*)",
+      "WebSearch",
+      "Bash(grep:*)",
+      "Bash(done)",
+      "Bash(\"C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\":*)",
+      "Bash(\"C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nimport json, sys\nwith open\\(''mmcad_training_colab.ipynb'', encoding=''utf-8''\\) as f:\n    nb = json.load\\(f\\)\ncells = nb[''cells'']\nprint\\(f''Total cells: {len\\(cells\\)}''\\)\nfor i, cell in enumerate\\(cells\\):\n    src = ''''.join\\(cell[''source''][:3]\\)[:150]\n    print\\(f''Cell {i} \\({cell[\"\"cell_type\"\"]}\\): {src.strip\\(\\)[:150]}''\\)\n\")",
+      "Bash(\"C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -X utf8 -c \"\nimport json\nwith open\\(''mmcad_training_colab.ipynb'', encoding=''utf-8''\\) as f:\n    nb = json.load\\(f\\)\ncells = nb[''cells'']\nprint\\(f''Total cells: {len\\(cells\\)}''\\)\nfor i, cell in enumerate\\(cells\\):\n    src = ''''.join\\(cell[''source''][:2]\\)[:120].encode\\(''ascii'',''replace''\\).decode\\(\\)\n    print\\(f''Cell {i} \\({cell[\"\"cell_type\"\"]}\\): {src.strip\\(\\)[:120]}''\\)\n\")",
+      "Bash(\"C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -X utf8 -c:*)",
+      "Bash(conda env export:*)",
+      "Bash(git rm:*)",
+      "Bash(git reset:*)"
     ]
   }
 }
