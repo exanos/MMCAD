@@ -1,0 +1,102 @@
+# CLIP4CAD-GFA v2 Configuration
+# Grounded Feature Alignment with Joint Self-Grounding Training
+
+# ============================================================================
+# Model Dimensions
+# ============================================================================
+
+# FSQ-encoded AutoBrep features (rich geometric information)
+d_face: 48          # Face latent: surface type, curvature, orientation
+d_edge: 12          # Edge latent: boundary curves, connectivity
+
+# Pre-computed encoder features
+d_pc: 1024          # ShapeLLM features (32 local + 1 global)
+d_text: 3072        # Phi-4-mini features
+
+# Internal architecture
+d_unified: 256      # Internal dimension
+d_proj: 128         # Projection head output
+d_ground: 128       # Grounding projection dimension
+
+# ============================================================================
+# Architecture Parameters
+# ============================================================================
+
+num_slots: 12                 # Feature parsing slots (K)
+num_detail_queries: 8         # Hierarchical detail queries
+num_heads: 8                  # Attention heads
+num_parser_layers: 2          # Text parser transformer layers
+num_self_ground_layers: 2     # Self-grounding adapter layers
+dropout: 0.1
+
+# Max sequence lengths
+max_faces: 192
+max_edges: 512
+max_pc_tokens: 33   # 32 local + 1 global
+max_text_tokens: 512
+
+# Temperature initialization
+tau_init: 0.07
+tau_ground_init: 0.1
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Stage 1: Establish Alignment (Epochs 1-15)
+  stage1_epochs: 15
+  stage1_lr: 3.0e-5
+  stage1_lambda_self: 0.3       # Start mild
+  stage1_lambda_distill: 0.1
+  stage1_lambda_detail: 0.0     # Disabled
+
+  # Stage 2: Hard Negatives + Fine-Grained (Epochs 16-35)
+  stage2_epochs: 20
+  stage2_lr: 1.0e-5             # Reduced
+  stage2_lambda_self: 0.5       # Increase
+  stage2_lambda_distill: 0.2
+  stage2_lambda_detail: 0.3     # Enable
+
+  # General training
+  batch_size: 512               # Large batch for contrastive
+  warmup_epochs: 2
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  min_lr: 1.0e-6
+
+  # Hard negative mining
+  hard_negative_k: 10
+  mine_every_n_epochs: 5
+
+  # Logging and checkpointing
+  log_every: 100
+  save_every: 5
+  eval_every: 5
+
+  # Hardware optimization
+  empty_cache_every_epoch: true
+  gradient_checkpointing: false
+
+# ============================================================================
+# Data Paths (override in notebook/training script)
+# ============================================================================
+
+data:
+  data_root: d:/Defect_Det/MMCAD/data
+  pc_file: c:/Users/User/Desktop/pc_embeddings_full.h5
+  brep_file: c:/Users/User/Desktop/brep_features.h5
+  text_files: c:/Users/User/Desktop/text_splits/
+
+# ============================================================================
+# Success Criteria (for monitoring)
+# ============================================================================
+
+targets:
+  # Stage 1 (Epoch 15)
+  stage1_text_brep_r1: 0.50     # >= 50%
+  stage1_self_cosine: 0.80      # >= 0.8
+
+  # Stage 2 (Epoch 35)
+  stage2_text_brep_r1: 0.55     # >= 55%
+  stage2_self_cosine: 0.90      # >= 0.9

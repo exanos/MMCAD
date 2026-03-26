@@ -1,0 +1,108 @@
+# CLIP4CAD-GFA v2.4 Configuration
+# Shared Encoder Architecture
+#
+# Key changes from v2:
+# - Grounding and aggregation are SHARED between guided and self paths
+# - Only query generation is separate (SelfQueryGenerator)
+# - MSE embedding distillation (stronger than cosine)
+# - Confidence alignment loss
+
+# ============================================================================
+# Model Dimensions
+# ============================================================================
+
+d_face: 48          # AutoBrep face features
+d_edge: 12          # AutoBrep edge features
+d_pc: 1024          # ShapeLLM features
+d_text: 3072        # Phi-4-mini features
+d_unified: 256      # Internal dimension
+d_proj: 128         # Projection head output
+d_ground: 128       # Grounding projection dimension
+
+# ============================================================================
+# Architecture Parameters
+# ============================================================================
+
+num_slots: 12                 # Feature parsing slots (K)
+num_detail_queries: 8         # Hierarchical detail queries
+num_heads: 8                  # Attention heads
+num_parser_layers: 2          # Text parser transformer layers
+num_self_query_layers: 2      # Self query adapter layers (smaller FFN!)
+dropout: 0.1
+
+# Max sequence lengths
+max_faces: 192
+max_edges: 512
+max_pc_tokens: 33
+
+# Temperature initialization
+tau_init: 0.07
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+
+training:
+  # Stage 1: Heavy Distillation (Epochs 1-15)
+  # Focus on aligning self path with guided path
+  stage1_epochs: 15
+  stage1_lr: 3.0e-5
+  stage1_lambda_self: 0.05        # Very low - don't let self compete early
+  stage1_lambda_distill: 0.5      # High - grounding matrix alignment
+  stage1_lambda_embed_distill: 1.0 # Very high - MSE embedding alignment
+  stage1_lambda_conf_align: 0.2   # Match activation patterns
+  stage1_lambda_detail: 0.0       # Disabled
+
+  # Stage 2: Balanced Training (Epochs 16-35)
+  # Increase self weight, add detail loss with hard negatives
+  stage2_epochs: 20
+  stage2_lr: 1.0e-5
+  stage2_lambda_self: 0.2
+  stage2_lambda_distill: 0.3
+  stage2_lambda_embed_distill: 0.5
+  stage2_lambda_conf_align: 0.1
+  stage2_lambda_detail: 0.3
+
+  # General training
+  batch_size: 512               # Large batch for contrastive
+  warmup_epochs: 3              # Longer warmup for stability
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  min_lr: 1.0e-6
+
+  # Hard negative mining
+  hard_negative_k: 10
+  mine_every_n_epochs: 5
+
+  # Logging and checkpointing
+  log_every: 100
+  save_every: 5
+  eval_every: 5
+
+  # Hardware optimization
+  empty_cache_every_epoch: true
+  gradient_checkpointing: false
+
+# ============================================================================
+# Data Paths (override in notebook/training script)
+# ============================================================================
+
+data:
+  data_root: d:/Defect_Det/MMCAD/data
+  pc_file: c:/Users/User/Desktop/pc_embeddings_full.h5
+  brep_file: c:/Users/User/Desktop/brep_features.h5
+  text_file: c:/Users/User/Desktop/text_embeddings.h5
+
+# ============================================================================
+# Success Criteria
+# ============================================================================
+
+targets:
+  # Stage 1 (Epoch 15)
+  stage1_self_cosine: 0.80      # Should be HIGH due to shared encoder
+  stage1_text_brep_r1_guided: 0.55
+
+  # Stage 2 (Epoch 35)
+  stage2_self_cosine: 0.90      # Should be VERY HIGH
+  stage2_text_brep_r1_guided: 0.60
+  stage2_text_brep_r1_self: 0.55  # Self should be close to guided!
