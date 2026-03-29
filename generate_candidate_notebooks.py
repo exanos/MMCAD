@@ -127,8 +127,8 @@ print("CSV copied!")
 
 # --- B-Rep features (copy to local SSD for speed) ---
 print("\\nCopying B-Rep features to local SSD...")
-BREP_H5_SRC = f"{DRIVE_ROOT}/brep_autobrep.h5"
-BREP_H5_DST = f"{EXTRACT_DIR}/brep_autobrep.h5"
+BREP_H5_SRC = f"{DRIVE_ROOT}/brep_features.h5"
+BREP_H5_DST = f"{EXTRACT_DIR}/brep_features.h5"
 if os.path.exists(BREP_H5_DST):
     print("B-Rep HDF5 already exists locally")
 else:
@@ -272,6 +272,14 @@ train_uid_list = load_uids(train_uid_path)
 val_uid_list = load_uids(val_uid_path)
 test_uid_list = load_uids(test_uid_path)
 print(f"\\nSplit UIDs: train={len(train_uid_list)}, val={len(val_uid_list)}, test={len(test_uid_list)}")
+
+# Truncate train UIDs to match actual H5 row count (H5 may have fewer rows)
+train_text_h5 = h5py.File(config.TRAIN_TEXT_H5, 'r')
+n_train_h5 = train_text_h5['desc_embeddings'].shape[0]
+train_text_h5.close()
+if len(train_uid_list) > n_train_h5:
+    print(f"  Truncating train UIDs from {len(train_uid_list)} to {n_train_h5} (matches H5 rows)")
+    train_uid_list = train_uid_list[:n_train_h5]
 
 # Build text UID maps (train + val for training, test for eval)
 print("\\nMapping text embeddings:")
@@ -519,50 +527,13 @@ print(f"  Gated DeltaNet: {'NVIDIA implementation' if HAS_GDN else 'Standard att
 # ============================================================
 
 CELL_BREP_ENCODER_TOPOLOGY = '''\
-# Cell: Topology-Aware B-Rep Encoder (EdgeMessageLayer + HybridBRepTransformer)
+# Cell: B-Rep Encoder (face/edge features + HybridBRepTransformer, no topology metadata needed)
 
-class EdgeMessageLayer(nn.Module):
-    """Message passing between faces and edges through B-Rep topology."""
-    def __init__(self, d, dropout=0.1):
-        super().__init__()
-        self.face_to_edge = nn.Sequential(
-            nn.Linear(d * 3, d * 2), nn.GELU(), nn.Dropout(dropout), nn.Linear(d * 2, d))
-        self.edge_to_face = nn.Sequential(
-            nn.Linear(d * 2, d * 2), nn.GELU(), nn.Dropout(dropout), nn.Linear(d * 2, d))
-        self.norm_f = nn.LayerNorm(d)
-        self.norm_e = nn.LayerNorm(d)
-        self.gate_f = nn.Sequential(nn.Linear(d * 2, d), nn.Sigmoid())
-        self.gate_e = nn.Sequential(nn.Linear(d * 2, d), nn.Sigmoid())
-
-    def forward(self, F_feat, E, edge_to_faces, face_mask, edge_mask):
-        B, N_e, d = E.shape
-        N_f = F_feat.shape[1]
-        f1_idx = edge_to_faces[:, :, 0].clamp(0, N_f - 1).long()
-        f2_idx = edge_to_faces[:, :, 1].clamp(0, N_f - 1).long()
-        valid_edge = edge_mask.bool() & (edge_to_faces[:, :, 0] >= 0) & (edge_to_faces[:, :, 1] >= 0)
-        f1 = torch.gather(F_feat, 1, f1_idx.unsqueeze(-1).expand(-1, -1, d))
-        f2 = torch.gather(F_feat, 1, f2_idx.unsqueeze(-1).expand(-1, -1, d))
-        msg_e = self.face_to_edge(torch.cat([E, f1, f2], dim=-1))
-        msg_e = msg_e * valid_edge.unsqueeze(-1).float()
-        gate_e = self.gate_e(torch.cat([E, msg_e], dim=-1))
-        E_new = self.norm_e(E + gate_e * msg_e)
-        face_msg = torch.zeros_like(F_feat)
-        face_count = torch.zeros(B, N_f, 1, device=F_feat.device)
-        edge_contrib = E_new * valid_edge.unsqueeze(-1).float()
-        count_contrib = valid_edge.unsqueeze(-1).float()
-        face_msg.scatter_add_(1, f1_idx.unsqueeze(-1).expand(-1, -1, d), edge_contrib)
-        face_count.scatter_add_(1, f1_idx.unsqueeze(-1), count_contrib)
-        face_msg.scatter_add_(1, f2_idx.unsqueeze(-1).expand(-1, -1, d), edge_contrib)
-        face_count.scatter_add_(1, f2_idx.unsqueeze(-1), count_contrib)
-        face_msg = face_msg / (face_count + 1e-8)
-        msg_f = self.edge_to_face(torch.cat([F_feat, face_msg], dim=-1))
-        gate_f = self.gate_f(torch.cat([F_feat, msg_f], dim=-1))
-        F_new = self.norm_f(F_feat + gate_f * msg_f * face_mask.unsqueeze(-1).float())
-        return F_new, E_new
-
-
-class TopologyBRepEncoder(nn.Module):
-    """B-Rep encoder: EdgeMessageLayer x3 + HybridBRepTransformer (6 layers)."""
+class BRepEncoder(nn.Module):
+    """B-Rep encoder: project face/edge features + positional embeddings + HybridBRepTransformer.
+    Works with brep_features.h5 which has only face_features, edge_features, and masks.
+    Self-attention in the transformer learns face-edge relationships from feature similarity.
+    """
     def __init__(self, config):
         super().__init__()
         d = config.D_MODEL
@@ -572,17 +543,18 @@ class TopologyBRepEncoder(nn.Module):
             nn.Linear(config.D_EDGE, d), nn.LayerNorm(d), nn.GELU(), nn.Dropout(config.DROPOUT))
         self.face_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
         self.edge_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
-        self.level_emb = nn.Embedding(config.MAX_BFS_LEVELS, d)
-        self.msg_layers = nn.ModuleList([EdgeMessageLayer(d, config.DROPOUT) for _ in range(config.NUM_MSG_LAYERS)])
+        self.face_pos = nn.Embedding(config.MAX_FACES, d)
+        self.edge_pos = nn.Embedding(config.MAX_EDGES, d)
         self.transformer = HybridBRepTransformer(d, config.NUM_HEADS, n_streams=3, dropout=config.DROPOUT)
         self.norm = nn.LayerNorm(d)
 
-    def forward(self, face_feats, edge_feats, face_mask, edge_mask, edge_to_faces, bfs_level):
+    def forward(self, face_feats, edge_feats, face_mask, edge_mask):
+        B = face_feats.shape[0]
+        dev = face_feats.device
         F_feat = self.face_proj(face_feats.float()) + self.face_type
-        F_feat = F_feat + self.level_emb(bfs_level.clamp(0, 31).long())
+        F_feat = F_feat + self.face_pos(torch.arange(F_feat.shape[1], device=dev))
         E = self.edge_proj(edge_feats.float()) + self.edge_type
-        for layer in self.msg_layers:
-            F_feat, E = layer(F_feat, E, edge_to_faces, face_mask, edge_mask)
+        E = E + self.edge_pos(torch.arange(E.shape[1], device=dev))
         X = torch.cat([F_feat, E], dim=1)
         mask = torch.cat([face_mask, edge_mask], dim=1)
         X = self.transformer(X, mask=mask)
@@ -590,19 +562,22 @@ class TopologyBRepEncoder(nn.Module):
         X = torch.nan_to_num(X, nan=0.0)
         return X, mask
 
-print("TopologyBRepEncoder defined!")'''
+print("BRepEncoder defined!")'''
 
 CELL_BREP_ENCODER_SHEAF = '''\
-# Cell: Sheaf B-Rep Encoder (SheafBRepLayer + HybridBRepTransformer)
+# Cell: Sheaf B-Rep Encoder (KNN pseudo-adjacency + Sheaf diffusion + HybridBRepTransformer)
+# Since brep_features.h5 has no edge_to_faces topology, we construct pseudo-adjacency
+# from face feature similarity (KNN in projected space).
 
 class SheafBRepLayer(nn.Module):
-    """Sheaf neural network layer for B-Rep face-adjacency graphs.
-    Learns diagonal restriction maps for anisotropic diffusion.
-    Handles heterophilic adjacency (planar face next to cylindrical fillet).
+    """Sheaf layer with KNN-based pseudo-adjacency (no explicit topology needed).
+    Computes K nearest face neighbors from projected features, then runs
+    sheaf diffusion with learned diagonal restriction maps.
     """
-    def __init__(self, d_model, d_stalk=64, dropout=0.1):
+    def __init__(self, d_model, d_stalk=64, k_neighbors=8, dropout=0.1):
         super().__init__()
         self.d_stalk = d_stalk
+        self.k = k_neighbors
         self.proj_in = nn.Linear(d_model, d_stalk)
         self.proj_out = nn.Linear(d_stalk, d_model)
         self.restriction_mlp = nn.Sequential(
@@ -614,30 +589,25 @@ class SheafBRepLayer(nn.Module):
         self.gate = nn.Sequential(nn.Linear(d_stalk * 2, d_stalk), nn.Sigmoid())
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, F_feat, edge_to_faces, face_mask, edge_mask):
+    def forward(self, F_feat, face_mask):
         B, N_f, d = F_feat.shape
-        N_e = edge_to_faces.shape[1]
         X = self.proj_in(F_feat)
-        f1_idx = edge_to_faces[:, :, 0].clamp(0, N_f - 1).long()
-        f2_idx = edge_to_faces[:, :, 1].clamp(0, N_f - 1).long()
-        valid = edge_mask.bool() & (edge_to_faces[:, :, 0] >= 0) & (edge_to_faces[:, :, 1] >= 0)
-        f1_feat = torch.gather(F_feat, 1, f1_idx.unsqueeze(-1).expand(-1, -1, d))
-        f2_feat = torch.gather(F_feat, 1, f2_idx.unsqueeze(-1).expand(-1, -1, d))
-        R = self.restriction_mlp(torch.cat([f1_feat, f2_feat], dim=-1))
-        R = R * valid.unsqueeze(-1).float()
-        X_f1 = torch.gather(X, 1, f1_idx.unsqueeze(-1).expand(-1, -1, self.d_stalk))
-        X_f2 = torch.gather(X, 1, f2_idx.unsqueeze(-1).expand(-1, -1, self.d_stalk))
-        diff = X_f1 - X_f2
-        weighted_diff = R * diff
+        # KNN pseudo-adjacency from face features
+        F_norm = F.normalize(F_feat, dim=-1)
+        sim = torch.bmm(F_norm, F_norm.transpose(1, 2))  # (B, N_f, N_f)
+        sim = sim.masked_fill(~face_mask.bool().unsqueeze(1), -1e9)
+        sim.diagonal(dim1=1, dim2=2).fill_(-1e9)  # exclude self
+        _, knn_idx = sim.topk(self.k, dim=-1)  # (B, N_f, K)
+        # Sheaf diffusion over KNN neighbors
         face_update = torch.zeros_like(X)
-        update_count = torch.zeros(B, N_f, 1, device=X.device)
-        edge_msg = R * weighted_diff * valid.unsqueeze(-1).float()
-        count_one = valid.unsqueeze(-1).float()
-        face_update.scatter_add_(1, f1_idx.unsqueeze(-1).expand(-1, -1, self.d_stalk), edge_msg)
-        face_update.scatter_add_(1, f2_idx.unsqueeze(-1).expand(-1, -1, self.d_stalk), -edge_msg)
-        update_count.scatter_add_(1, f1_idx.unsqueeze(-1), count_one)
-        update_count.scatter_add_(1, f2_idx.unsqueeze(-1), count_one)
-        face_update = face_update / (update_count + 1e-8)
+        for ki in range(self.k):
+            nb_idx = knn_idx[:, :, ki]  # (B, N_f)
+            nb_feat = torch.gather(F_feat, 1, nb_idx.unsqueeze(-1).expand(-1, -1, d))
+            R = self.restriction_mlp(torch.cat([F_feat, nb_feat], dim=-1))  # (B, N_f, d_stalk)
+            nb_X = torch.gather(X, 1, nb_idx.unsqueeze(-1).expand(-1, -1, self.d_stalk))
+            diff = X - nb_X
+            face_update = face_update + R * diff
+        face_update = face_update / self.k
         transformed = self.W2(F.gelu(self.W1(face_update)))
         transformed = self.dropout(transformed)
         gate_val = self.gate(torch.cat([X, transformed], dim=-1))
@@ -646,7 +616,9 @@ class SheafBRepLayer(nn.Module):
 
 
 class SheafBRepEncoder(nn.Module):
-    """B-Rep encoder: SheafBRepLayer x2 + HybridBRepTransformer (6 layers)."""
+    """B-Rep encoder: SheafBRepLayer (KNN) x2 + HybridBRepTransformer (6 layers).
+    No edge_to_faces or bfs_level required — works with brep_features.h5.
+    """
     def __init__(self, config):
         super().__init__()
         d = config.D_MODEL
@@ -656,20 +628,24 @@ class SheafBRepEncoder(nn.Module):
             nn.Linear(config.D_EDGE, d), nn.LayerNorm(d), nn.GELU(), nn.Dropout(config.DROPOUT))
         self.face_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
         self.edge_type = nn.Parameter(torch.randn(1, 1, d) * 0.02)
-        self.level_emb = nn.Embedding(config.MAX_BFS_LEVELS, d)
+        self.face_pos = nn.Embedding(config.MAX_FACES, d)
+        self.edge_pos = nn.Embedding(config.MAX_EDGES, d)
         d_stalk = getattr(config, 'D_STALK', 64)
         n_sheaf = getattr(config, 'NUM_SHEAF_LAYERS', 2)
-        self.sheaf_layers = nn.ModuleList([SheafBRepLayer(d, d_stalk, config.DROPOUT) for _ in range(n_sheaf)])
+        self.sheaf_layers = nn.ModuleList([SheafBRepLayer(d, d_stalk, k_neighbors=8, dropout=config.DROPOUT) for _ in range(n_sheaf)])
         self.transformer = HybridBRepTransformer(d, config.NUM_HEADS, n_streams=3, dropout=config.DROPOUT)
         self.norm = nn.LayerNorm(d)
 
-    def forward(self, face_feats, edge_feats, face_mask, edge_mask, edge_to_faces, bfs_level):
+    def forward(self, face_feats, edge_feats, face_mask, edge_mask):
+        B = face_feats.shape[0]
+        dev = face_feats.device
         F_feat = self.face_proj(face_feats.float()) + self.face_type
-        F_feat = F_feat + self.level_emb(bfs_level.clamp(0, 31).long())
+        F_feat = F_feat + self.face_pos(torch.arange(F_feat.shape[1], device=dev))
         E = self.edge_proj(edge_feats.float()) + self.edge_type
-        # Sheaf message passing on face-adjacency graph
+        E = E + self.edge_pos(torch.arange(E.shape[1], device=dev))
+        # Sheaf message passing on KNN pseudo-adjacency (face tokens only)
         for sheaf in self.sheaf_layers:
-            F_feat = sheaf(F_feat, edge_to_faces, face_mask, edge_mask)
+            F_feat = sheaf(F_feat, face_mask)
         # Concatenate face+edge tokens, run hybrid transformer
         X = torch.cat([F_feat, E], dim=1)
         mask = torch.cat([face_mask, edge_mask], dim=1)
@@ -1192,7 +1168,7 @@ class CLIP4CADModel(nn.Module):
         self.config = config
         d = config.D_MODEL
         self.text_encoder = TextEncoder(config)
-        self.brep_encoder = TopologyBRepEncoder(config)
+        self.brep_encoder = BRepEncoder(config)
         self.pc_encoder = DGCNNEncoder(latent_size=config.D_PC, k=config.DGCNN_K)
         self.pc_proj_layer = nn.Sequential(
             nn.Linear(config.D_PC, d), nn.LayerNorm(d), nn.GELU(),
@@ -1215,8 +1191,7 @@ class CLIP4CADModel(nn.Module):
         z_pc, mu_pc, logvar_pc = self.pc_proj(pc_feat)
         X_brep, brep_mask = self.brep_encoder(
             batch['face_features'].to(device), batch['edge_features'].to(device),
-            batch['face_mask'].to(device), batch['edge_mask'].to(device),
-            batch['edge_to_faces'].to(device), batch['bfs_level'].to(device))
+            batch['face_mask'].to(device), batch['edge_mask'].to(device))
         brep_pooled = self.brep_pool(X_brep, brep_mask)
         z_brep, mu_brep, logvar_brep = self.brep_proj(brep_pooled)
         result = {'z_brep': z_brep, 'z_pc': z_pc, 'tau': self.tau,
@@ -1261,8 +1236,7 @@ class CLIP4CADModel(nn.Module):
         z_pc = self.pc_proj(self.pc_proj_layer(pc_feat))
         X_brep, brep_mask = self.brep_encoder(
             batch['face_features'].to(device), batch['edge_features'].to(device),
-            batch['face_mask'].to(device), batch['edge_mask'].to(device),
-            batch['edge_to_faces'].to(device), batch['bfs_level'].to(device))
+            batch['face_mask'].to(device), batch['edge_mask'].to(device))
         z_brep = self.brep_proj(self.brep_pool(X_brep, brep_mask))
         result = {'z_brep': z_brep, 'z_pc': z_pc, 'tau': self.tau}
         if stage >= 1:
@@ -1283,7 +1257,7 @@ class CLIP4CADModel(nn.Module):
         d = config.D_MODEL
         d_proj = config.D_PROJ  # 384 for hierarchical
         self.text_encoder = TextEncoder(config)
-        self.brep_encoder = TopologyBRepEncoder(config)
+        self.brep_encoder = BRepEncoder(config)
         self.pc_encoder = DGCNNEncoder(latent_size=config.D_PC, k=config.DGCNN_K)
         self.pc_proj_layer = nn.Sequential(
             nn.Linear(config.D_PC, d), nn.LayerNorm(d), nn.GELU(),
@@ -1306,8 +1280,7 @@ class CLIP4CADModel(nn.Module):
         z_pc = self.pc_proj(self.pc_proj_layer(pc_feat))
         X_brep, brep_mask = self.brep_encoder(
             batch['face_features'].to(device), batch['edge_features'].to(device),
-            batch['face_mask'].to(device), batch['edge_mask'].to(device),
-            batch['edge_to_faces'].to(device), batch['bfs_level'].to(device))
+            batch['face_mask'].to(device), batch['edge_mask'].to(device))
         z_brep = self.brep_proj(self.brep_pool(X_brep, brep_mask))
         result = {'z_brep': z_brep, 'z_pc': z_pc, 'tau': self.tau}
         if stage >= 1:
@@ -1329,7 +1302,7 @@ class CLIP4CADModel(nn.Module):
         self.config = config
         d = config.D_MODEL
         self.text_encoder = TextEncoder(config)
-        self.brep_encoder = TopologyBRepEncoder(config)
+        self.brep_encoder = BRepEncoder(config)
         self.pc_encoder = DGCNNEncoder(latent_size=config.D_PC, k=config.DGCNN_K)
         self.pc_proj_layer = nn.Sequential(
             nn.Linear(config.D_PC, d), nn.LayerNorm(d), nn.GELU(),
@@ -1353,8 +1326,7 @@ class CLIP4CADModel(nn.Module):
         z_pc_raw = self.pc_proj(self.pc_proj_layer(pc_feat))
         X_brep, brep_mask = self.brep_encoder(
             batch['face_features'].to(device), batch['edge_features'].to(device),
-            batch['face_mask'].to(device), batch['edge_mask'].to(device),
-            batch['edge_to_faces'].to(device), batch['bfs_level'].to(device))
+            batch['face_mask'].to(device), batch['edge_mask'].to(device))
         z_brep_raw = self.brep_proj(self.brep_pool(X_brep, brep_mask))
         result = {'z_brep': z_brep_raw, 'z_pc': z_pc_raw, 'tau': self.tau,
                   'z_brep_raw': z_brep_raw, 'z_pc_raw': z_pc_raw, 'sigreg_module': self.sigreg}
@@ -1403,8 +1375,7 @@ class CLIP4CADModel(nn.Module):
         z_pc, mu_pc, logvar_pc = self.pc_proj(self.pc_proj_layer(pc_feat))
         X_brep, brep_mask = self.brep_encoder(
             batch['face_features'].to(device), batch['edge_features'].to(device),
-            batch['face_mask'].to(device), batch['edge_mask'].to(device),
-            batch['edge_to_faces'].to(device), batch['bfs_level'].to(device))
+            batch['face_mask'].to(device), batch['edge_mask'].to(device))
         z_brep, mu_brep, logvar_brep = self.brep_proj(self.brep_pool(X_brep, brep_mask))
         result = {'z_brep': z_brep, 'z_pc': z_pc, 'tau': self.tau,
                   'mu_brep': mu_brep, 'logvar_brep': logvar_brep,
@@ -1598,22 +1569,20 @@ class CLIP4CADDataset(Dataset):
             if norm > 0: pc = pc / norm
         idx_pts = np.random.choice(len(pc), self.config.NUM_POINTS, replace=len(pc) < self.config.NUM_POINTS)
         pc = torch.from_numpy(pc[idx_pts]).T
-        # B-Rep
+        # B-Rep (brep_features.h5 — no edge_to_faces or bfs_level)
         brep_idx = self.brep_uid_to_idx[uid_str]
         face_features = torch.from_numpy(self.brep_h5['face_features'][brep_idx].astype(np.float32))
         edge_features = torch.from_numpy(self.brep_h5['edge_features'][brep_idx].astype(np.float32))
         face_mask = torch.from_numpy(self.brep_h5['face_masks'][brep_idx].astype(np.float32))
         edge_mask = torch.from_numpy(self.brep_h5['edge_masks'][brep_idx].astype(np.float32))
-        edge_to_faces = torch.from_numpy(self.brep_h5['edge_to_faces'][brep_idx].astype(np.int64))
-        bfs_level = torch.from_numpy(self.brep_h5['bfs_level'][brep_idx].astype(np.int64))
         # Text (multi-file)
         h5_path, text_idx = self.text_uid_map[uid_str]
         h5 = self.text_h5_handles[h5_path]
         text_features = torch.from_numpy(h5['desc_embeddings'][text_idx].astype(np.float32))
         text_mask = torch.from_numpy(h5['desc_masks'][text_idx].astype(np.float32))
         return {'point_cloud': pc, 'face_features': face_features, 'edge_features': edge_features,
-                'face_mask': face_mask, 'edge_mask': edge_mask, 'edge_to_faces': edge_to_faces,
-                'bfs_level': bfs_level, 'text_features': text_features, 'text_mask': text_mask, 'idx': i}
+                'face_mask': face_mask, 'edge_mask': edge_mask,
+                'text_features': text_features, 'text_mask': text_mask, 'idx': i}
 
     def __del__(self):
         if hasattr(self, 'brep_h5') and self.brep_h5: self.brep_h5.close()
@@ -1827,7 +1796,7 @@ DRIVE_ROOT = "/content/drive/MyDrive/MMCAD"
 class Config:
     DATA_ROOT = "/content/mmcad_data"
     CSV_PATH = os.path.join(DATA_ROOT, "abc_dataset_clean.csv")
-    BREP_H5_PATH = os.path.join(DATA_ROOT, "brep_autobrep.h5")
+    BREP_H5_PATH = os.path.join(DATA_ROOT, "brep_features.h5")
     TRAIN_TEXT_H5 = f"{DRIVE_ROOT}/train_text_embeddings.h5"
     VAL_TEXT_H5 = f"{DRIVE_ROOT}/val_text_embeddings.h5"
     TEST_TEXT_H5 = f"{DRIVE_ROOT}/test_text_embeddings.h5"
@@ -1841,8 +1810,8 @@ class Config:
     D_FACE = 48; D_EDGE = 12; D_TEXT = 3072; D_PC = 1024
     D_MODEL = 384; D_TEXT_HIDDEN = 768
     NUM_POOL_QUERIES = 16; NUM_HEADS = 8; DROPOUT = 0.1
-    NUM_MSG_LAYERS = 3; NUM_BREP_TF_LAYERS = 6; NUM_TEXT_TF_LAYERS = 4
-    MAX_BFS_LEVELS = 32; MAX_FACES = 192; MAX_EDGES = 512; DGCNN_K = 20
+    NUM_BREP_TF_LAYERS = 6; NUM_TEXT_TF_LAYERS = 4
+    MAX_FACES = 192; MAX_EDGES = 512; DGCNN_K = 20
     NUM_POINTS = 2048; SAVE_EVERY_N_EPOCHS = 5; NUM_WORKERS = 4
     K_VALUES = [1, 5, 10]; SUBSET_SIZE = None; ENABLE_TENSORBOARD = True'''
 
