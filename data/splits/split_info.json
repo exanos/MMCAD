@@ -1,0 +1,15 @@
+{
+  "pc_file": "c:/Users/User/Desktop/pc_embeddings_full.h5",
+  "brep_file": "c:/Users/User/Desktop/brep_features.h5",
+  "text_file": "c:/Users/User/Desktop/text_embeddings.h5",
+  "total_samples": 166382,
+  "train_samples": 133105,
+  "val_samples": 16638,
+  "test_samples": 16639,
+  "split_seed": 42,
+  "split_ratios": [
+    0.8,
+    0.1,
+    0.1
+  ]
+}

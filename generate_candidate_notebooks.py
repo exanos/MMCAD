@@ -101,19 +101,20 @@ CELL_DATA = '''\
 import os, time
 
 EXTRACT_DIR = "/content/mmcad_data"
+DRIVE_ROOT = "/content/drive/MyDrive/MMCAD"
 os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 # --- Point Clouds (lz4 archive) ---
 print("=" * 60)
-print("EXTRACTING POINT CLOUDS")
+print("SETTING UP DATA")
 print("=" * 60)
 
-PLY_TAR_LZ4 = "/content/drive/MyDrive/MMCAD/ply.tar.lz4"
+PLY_TAR_LZ4 = f"{DRIVE_ROOT}/ply.tar.lz4"
 ply_dir = f"{EXTRACT_DIR}/abc_ply_organized"
 if os.path.exists(ply_dir) and len(os.listdir(ply_dir)) > 100:
     print(f"Point clouds already extracted ({len(os.listdir(ply_dir))} files)")
 else:
-    print(f"Extracting from: {PLY_TAR_LZ4}")
+    print(f"Extracting PLY from: {PLY_TAR_LZ4}")
     start = time.time()
     !apt-get install -qq lz4 > /dev/null 2>&1
     !lz4 -dc "{PLY_TAR_LZ4}" | tar -xf - -C "{EXTRACT_DIR}"
@@ -121,38 +122,51 @@ else:
 
 # --- CSV ---
 print("\\nCopying CSV...")
-!cp /content/drive/MyDrive/MMCAD/abc_dataset_clean.csv /content/mmcad_data/
+!cp "{DRIVE_ROOT}/abc_dataset_clean.csv" "{EXTRACT_DIR}/"
 print("CSV copied!")
 
 # --- B-Rep features (copy to local SSD for speed) ---
-print("\\nCopying B-Rep features...")
-BREP_H5_SRC = "/content/drive/MyDrive/MMCAD/brep_autobrep.h5"
+print("\\nCopying B-Rep features to local SSD...")
+BREP_H5_SRC = f"{DRIVE_ROOT}/brep_autobrep.h5"
 BREP_H5_DST = f"{EXTRACT_DIR}/brep_autobrep.h5"
 if os.path.exists(BREP_H5_DST):
-    print(f"B-Rep HDF5 already exists")
+    print("B-Rep HDF5 already exists locally")
 else:
     !cp "{BREP_H5_SRC}" "{BREP_H5_DST}"
-    print(f"B-Rep HDF5 copied!")
+    print("B-Rep HDF5 copied!")
 
-# --- Text features (keep on Drive — files are very large) ---
-print("\\nText embeddings will be read directly from Drive (too large to copy)")
-TRAIN_TEXT_H5 = "/content/drive/MyDrive/MMCAD/train_text_embeddings.h5"
-VAL_TEXT_H5 = "/content/drive/MyDrive/MMCAD/val_text_embeddings.h5"
-TEST_TEXT_H5 = "/content/drive/MyDrive/MMCAD/test_text_embeddings.h5"
+# --- Split UID files (MUST match text embedding H5 row order) ---
+print("\\nCopying split UID files...")
+SPLIT_SRC = f"{DRIVE_ROOT}/splits"
+SPLIT_DST = "/content/mmcad_splits"
+os.makedirs(SPLIT_DST, exist_ok=True)
+for fname in ['train_uids.txt', 'val_uids.txt', 'test_uids.txt']:
+    src = os.path.join(SPLIT_SRC, fname)
+    dst = os.path.join(SPLIT_DST, fname)
+    if os.path.exists(src):
+        !cp "{src}" "{dst}"
+        with open(dst) as f:
+            n = sum(1 for line in f if line.strip())
+        print(f"  {fname}: {n} UIDs")
+    else:
+        print(f"  WARNING: {fname} not found at {src}")
 
-for path, name in [(TRAIN_TEXT_H5, "Train"), (VAL_TEXT_H5, "Val"), (TEST_TEXT_H5, "Test")]:
+# --- Text features (read directly from Drive — too large to copy) ---
+print("\\nText embeddings (read from Drive):")
+for name, fname in [("Train", "train_text_embeddings.h5"), ("Val", "val_text_embeddings.h5"), ("Test", "test_text_embeddings.h5")]:
+    path = f"{DRIVE_ROOT}/{fname}"
     if os.path.exists(path):
         sz = os.path.getsize(path) / 1e9
-        print(f"  {name}: {path} ({sz:.1f} GB)")
+        print(f"  {name}: {sz:.1f} GB")
     else:
-        print(f"  WARNING: {name} text file not found at {path}")
+        print(f"  WARNING: {name} not found at {path}")
 
 print("\\n" + "=" * 60)
 print("ALL DATA READY!")
 print("=" * 60)'''
 
 CELL_SPLIT = '''\
-# Cell: Data Loading with Train/Val/Test Split (Combined train+val for training)
+# Cell: Load CSV + Apply Pre-defined Splits (Combined train+val for training)
 df = pd.read_csv(config.CSV_PATH)
 print(f"Total entries in CSV: {len(df)}")
 
@@ -170,30 +184,32 @@ if config.SUBSET_SIZE:
     valid_df = valid_df.sample(config.SUBSET_SIZE, random_state=config.RANDOM_SEED)
     print(f"Using subset of {config.SUBSET_SIZE} samples")
 
+# Load pre-defined split files (MUST match text embedding H5 files)
 train_split_path = os.path.join(config.SPLIT_DIR, 'train_uids.txt')
 val_split_path = os.path.join(config.SPLIT_DIR, 'val_uids.txt')
 test_split_path = os.path.join(config.SPLIT_DIR, 'test_uids.txt')
 
-if os.path.exists(train_split_path) and os.path.exists(val_split_path) and os.path.exists(test_split_path):
-    print("Loading existing split files...")
-    with open(train_split_path) as f: train_uids = set(int(line.strip()) for line in f if line.strip())
-    with open(val_split_path) as f: val_uids = set(int(line.strip()) for line in f if line.strip())
-    with open(test_split_path) as f: test_uids = set(int(line.strip()) for line in f if line.strip())
-    train_df = valid_df[valid_df['uid'].isin(train_uids)]
-    val_df = valid_df[valid_df['uid'].isin(val_uids)]
-    test_df = valid_df[valid_df['uid'].isin(test_uids)]
-else:
-    print("Creating new train/val/test splits...")
-    train_df, temp_df = train_test_split(valid_df, train_size=config.TRAIN_RATIO, random_state=config.RANDOM_SEED)
-    val_ratio_adjusted = config.VAL_RATIO / (config.VAL_RATIO + config.TEST_RATIO)
-    val_df, test_df = train_test_split(temp_df, train_size=val_ratio_adjusted, random_state=config.RANDOM_SEED)
-    os.makedirs(config.SPLIT_DIR, exist_ok=True)
-    for path, split_df in [(train_split_path, train_df), (val_split_path, val_df), (test_split_path, test_df)]:
-        with open(path, 'w') as f:
-            for uid in split_df['uid']: f.write(f"{uid}\\n")
-    print(f"Split files saved to {config.SPLIT_DIR}")
+assert os.path.exists(train_split_path), (
+    f"Split file not found: {train_split_path}\\n"
+    f"You MUST upload the splits/ folder to Google Drive at /MyDrive/MMCAD/splits/\\n"
+    f"These files define which UIDs are in each text embedding H5 file."
+)
 
-print(f"\\nOriginal Splits:")
+print("Loading pre-defined split files (must match text embedding H5s)...")
+with open(train_split_path) as f: train_uids = set(line.strip() for line in f if line.strip())
+with open(val_split_path) as f: val_uids = set(line.strip() for line in f if line.strip())
+with open(test_split_path) as f: test_uids = set(line.strip() for line in f if line.strip())
+
+# Match UIDs as both int and str since CSV may have int UIDs
+train_uids_int = set(int(u) for u in train_uids if u.isdigit())
+val_uids_int = set(int(u) for u in val_uids if u.isdigit())
+test_uids_int = set(int(u) for u in test_uids if u.isdigit())
+
+train_df = valid_df[valid_df['uid'].isin(train_uids) | valid_df['uid'].isin(train_uids_int)]
+val_df = valid_df[valid_df['uid'].isin(val_uids) | valid_df['uid'].isin(val_uids_int)]
+test_df = valid_df[valid_df['uid'].isin(test_uids) | valid_df['uid'].isin(test_uids_int)]
+
+print(f"\\nSplits applied:")
 print(f"  Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
 # Combine train + val for training (no memory constraints on Colab)
@@ -219,66 +235,53 @@ print(f"  face_features: {brep_h5['face_features'].shape}")
 print(f"  edge_features: {brep_h5['edge_features'].shape}")
 brep_h5.close()
 
-# --- Text features (3 separate H5 files) ---
-def build_text_uid_map(h5_path, label):
-    """Build UID -> (h5_path, index) mapping for a text H5 file."""
-    h5 = h5py.File(h5_path, 'r')
+# --- Text features: map UIDs to (H5_path, row_index) ---
+# The text H5 files do NOT contain UIDs. Row i in each H5 corresponds to
+# UID i in the matching split file (train_uids.txt, val_uids.txt, test_uids.txt).
+# These split files MUST be uploaded to Drive alongside the H5 files.
+
+def load_uids(path):
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]
+
+def build_text_uid_map_from_split(h5_path, uid_list, label):
+    """Map each UID to (h5_path, row_index). Row order matches UID list order."""
     uid_map = {}
-    # Check for UIDs in the file
-    uid_key = None
-    for key in ['uids', 'sample_ids']:
-        if key in h5:
-            uid_key = key
-            break
-    if uid_key:
-        uids_raw = h5[uid_key][:]
-        for i, uid in enumerate(uids_raw):
-            uid_str = uid.decode('utf-8') if isinstance(uid, bytes) else str(uid)
-            uid_map[uid_str] = (h5_path, i)
-        print(f"  {label}: {len(uid_map)} samples (UIDs from H5)")
-    else:
-        print(f"  {label}: {h5['desc_embeddings'].shape[0]} samples (no UIDs in H5 — will use B-Rep UID order)")
+    if not os.path.exists(h5_path):
+        print(f"  WARNING: {h5_path} not found!")
+        return uid_map
+    h5 = h5py.File(h5_path, 'r')
+    n_h5 = h5['desc_embeddings'].shape[0]
     h5.close()
+    n_uids = len(uid_list)
+    if n_h5 != n_uids:
+        print(f"  WARNING: {label} H5 has {n_h5} rows but UID file has {n_uids} entries!")
+    n = min(n_h5, n_uids)
+    for i in range(n):
+        uid_map[uid_list[i]] = (h5_path, i)
+    print(f"  {label}: {n} samples mapped")
     return uid_map
 
+# Load split UIDs
+train_uid_path = os.path.join(config.SPLIT_DIR, 'train_uids.txt')
+val_uid_path = os.path.join(config.SPLIT_DIR, 'val_uids.txt')
+test_uid_path = os.path.join(config.SPLIT_DIR, 'test_uids.txt')
+
+assert os.path.exists(train_uid_path), f"Split file not found: {train_uid_path}\\nUpload splits/ folder to Drive!"
+train_uid_list = load_uids(train_uid_path)
+val_uid_list = load_uids(val_uid_path)
+test_uid_list = load_uids(test_uid_path)
+print(f"\\nSplit UIDs: train={len(train_uid_list)}, val={len(val_uid_list)}, test={len(test_uid_list)}")
+
+# Build text UID maps (train + val for training, test for eval)
+print("\\nMapping text embeddings:")
 text_uid_to_source = {}
-for h5_path, label in [(config.TRAIN_TEXT_H5, "Train text"), (config.VAL_TEXT_H5, "Val text")]:
-    if os.path.exists(h5_path):
-        text_uid_to_source.update(build_text_uid_map(h5_path, label))
-
-test_text_uid_to_source = {}
-if os.path.exists(config.TEST_TEXT_H5):
-    test_text_uid_to_source = build_text_uid_map(config.TEST_TEXT_H5, "Test text")
-
-# If text H5 files don't have UIDs, build mapping from B-Rep UID order + split files
-if not text_uid_to_source:
-    print("\\n  Building text UID maps from split UIDs (positional indexing)...")
-    # Train text
-    train_text_h5 = h5py.File(config.TRAIN_TEXT_H5, 'r')
-    n_train_text = train_text_h5['desc_embeddings'].shape[0]
-    train_text_h5.close()
-    # Match train+val UIDs to train text (first N entries are train)
-    train_uids_list = sorted(train_df['uid'].astype(str).tolist())[:n_train_text]
-    for i, uid in enumerate(train_uids_list):
-        text_uid_to_source[uid] = (config.TRAIN_TEXT_H5, i)
-    # Val text
-    val_text_h5 = h5py.File(config.VAL_TEXT_H5, 'r')
-    n_val_text = val_text_h5['desc_embeddings'].shape[0]
-    val_text_h5.close()
-    val_uids_list = sorted(val_df['uid'].astype(str).tolist())[:n_val_text]
-    for i, uid in enumerate(val_uids_list):
-        text_uid_to_source[uid] = (config.VAL_TEXT_H5, i)
-    # Test text
-    test_text_h5 = h5py.File(config.TEST_TEXT_H5, 'r')
-    n_test_text = test_text_h5['desc_embeddings'].shape[0]
-    test_text_h5.close()
-    test_uids_list = sorted(test_df['uid'].astype(str).tolist())[:n_test_text]
-    for i, uid in enumerate(test_uids_list):
-        test_text_uid_to_source[uid] = (config.TEST_TEXT_H5, i)
-    print(f"  Train+Val text: {len(text_uid_to_source)}, Test text: {len(test_text_uid_to_source)}")
+text_uid_to_source.update(build_text_uid_map_from_split(config.TRAIN_TEXT_H5, train_uid_list, "Train text"))
+text_uid_to_source.update(build_text_uid_map_from_split(config.VAL_TEXT_H5, val_uid_list, "Val text"))
+test_text_uid_to_source = build_text_uid_map_from_split(config.TEST_TEXT_H5, test_uid_list, "Test text")
 
 all_text_uid_to_source = {**text_uid_to_source, **test_text_uid_to_source}
-print(f"\\nTotal text UIDs: {len(all_text_uid_to_source)}")
+print(f"\\nTotal text UIDs mapped: {len(all_text_uid_to_source)}")
 
 # --- Filter to trimodal samples ---
 print("\\nFiltering to trimodal samples...")
@@ -287,7 +290,7 @@ def filter_trimodal(df, text_map):
     return df[mask].reset_index(drop=True)
 
 trainval_df_tri = filter_trimodal(trainval_df, text_uid_to_source)
-eval_df_tri = filter_trimodal(eval_df, test_text_uid_to_source if test_text_uid_to_source else all_text_uid_to_source)
+eval_df_tri = filter_trimodal(eval_df, test_text_uid_to_source)
 
 print(f"\\nTrimodal samples:")
 print(f"  Train+Val: {len(trainval_df_tri)} (from {len(trainval_df)})")
@@ -1819,16 +1822,18 @@ cleanup_memory()'''
 def make_config_cell(candidate):
     base = '''\
 # Cell: Configuration
+DRIVE_ROOT = "/content/drive/MyDrive/MMCAD"
+
 class Config:
     DATA_ROOT = "/content/mmcad_data"
     CSV_PATH = os.path.join(DATA_ROOT, "abc_dataset_clean.csv")
     BREP_H5_PATH = os.path.join(DATA_ROOT, "brep_autobrep.h5")
-    TRAIN_TEXT_H5 = "/content/drive/MyDrive/MMCAD/train_text_embeddings.h5"
-    VAL_TEXT_H5 = "/content/drive/MyDrive/MMCAD/val_text_embeddings.h5"
-    TEST_TEXT_H5 = "/content/drive/MyDrive/MMCAD/test_text_embeddings.h5"
+    TRAIN_TEXT_H5 = f"{DRIVE_ROOT}/train_text_embeddings.h5"
+    VAL_TEXT_H5 = f"{DRIVE_ROOT}/val_text_embeddings.h5"
+    TEST_TEXT_H5 = f"{DRIVE_ROOT}/test_text_embeddings.h5"
     OUTPUT_DIR = "/content/clip4cad_checkpoints"
-    SPLIT_DIR = "/content/mmcad_splits"
-    TRAIN_RATIO = 0.80; VAL_RATIO = 0.10; TEST_RATIO = 0.10; RANDOM_SEED = 42
+    SPLIT_DIR = "/content/mmcad_splits"  # Copied from Drive in data setup cell
+    RANDOM_SEED = 42
     BATCH_SIZE = 128; LEARNING_RATE = 1e-4; TEXT_LR_MULT = 3.0
     WEIGHT_DECAY = 0.01; WARMUP_EPOCHS = 2; TEMPERATURE = 0.07
     GRAD_CLIP = 1.0; LABEL_SMOOTHING = 0.01
