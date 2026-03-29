@@ -1,0 +1,141 @@
+# CLIP4CAD Architecture Candidates v2: Implementation Guide
+
+**Created:** 2026-03-29
+**Source:** `clip4cad_architecture_candidates_v2.md` (literature survey)
+**Target:** SGP'26 resubmission, April 13 deadline
+**Hardware:** 2x A100 GPUs (Colab), 137K MM-CAD dataset
+
+---
+
+## Overview
+
+Five architecture candidates designed from a comprehensive literature survey of 60+ papers,
+synthesizing insights from 20+ prior experiments (best: 54.78% Text→BRep R@1).
+
+### Five Hard Facts from Experimental History
+
+1. **InfoNCE is the only loss that reliably works for retrieval** — every addition degraded performance except mild asymmetric grounding (+48%)
+2. **The B-Rep encoder is the bottleneck** — Text→PC reached 69.63% while Text→BRep peaked at 54.78%
+3. **Discrete bottlenecks destroy instance discrimination** — v4.0→v4.8.2: monotonic decline to 0%
+4. **Asymmetric modality treatment is essential** — BRep needs λ=0.08, PC needs λ=0.02
+5. **Architecture matters more than data scale** — 111K vs 166K gave comparable results
+
+---
+
+## Universal Infrastructure (Applied to ALL Candidates)
+
+### mHC-lite (Manifold Hyperconnections Lite)
+- **Source:** DeepSeek-V3, arXiv:2512.24880, arXiv:2601.05732
+- **What:** Replaces residual connections with n=3 parallel streams mixed by doubly-stochastic matrices
+- **Cost:** 6 learnable scalars per connection point (480 bytes total for entire model)
+- **Implementation:** `mHCLiteConnection` class — Birkhoff-von Neumann reparameterization
+
+### Gated DeltaNet Hybrid Attention
+- **Source:** NVIDIA, ICLR 2025, arXiv:2412.06464
+- **What:** 4 GDN layers (O(1) memory) + 2 Full Attention layers (global) for 6-layer B-Rep encoder
+- **Ratio:** 2:1 (not 3:1) because B-Rep sequences are short (max 192 faces)
+- **Fallback:** Standard `nn.TransformerEncoderLayer` if NVIDIA library unavailable
+
+---
+
+## Candidate A: VIB-Contrastive
+
+**Risk:** Low | **Expected gain:** 2-5% R@1 | **New code:** ~80 lines
+
+Each encoder outputs a distribution N(mu, sigma²) instead of a point estimate.
+KL divergence regularization with asymmetric beta (OMIB-inspired).
+
+- **Key classes:** `VIBProjectionHead`, `kl_divergence()`
+- **Loss:** 3-way InfoNCE + beta_brep × KL_brep + beta_pc × KL_pc + beta_text × KL_text
+- **Hyperparams:** beta_max=1e-3, asymmetric (BRep 0.3×, PC 0.7×, Text 0.1×)
+- **Theory:** Achille-Soatto invariance-minimality equivalence (JMLR 2018)
+
+## Candidate B: Sheaf B-Rep Encoder
+
+**Risk:** Medium | **Expected gain:** 5-10% R@1 | **New code:** ~150 lines
+
+Replaces EdgeMessageLayer with sheaf neural network message passing.
+Learns diagonal restriction maps for anisotropic diffusion on face-adjacency graph.
+
+- **Key classes:** `SheafBRepLayer`, `SheafBRepEncoder`
+- **Architecture:** 2 SheafBRepLayers → HybridBRepTransformer (6 layers)
+- **Novelty:** First sheaf method on B-Rep data; first SE(3) approach on CAD graphs
+- **Theory:** Bodnar et al. (NeurIPS 2022) — sheaf Laplacian resolves heterophily
+
+## Candidate C: Hierarchical Nested Contrastive
+
+**Risk:** Medium | **Expected gain:** 5-10% R@1 | **New code:** ~150 lines
+
+384-dim embedding with nested subspaces: z[:128] (title), z[:256] (keyword), z[:384] (full).
+Three text projection heads + nested dropout during training.
+
+- **Key classes:** `HierarchicalProjectionHead`, `nested_dropout_mask()`
+- **Loss:** Hierarchical InfoNCE at 3 levels with weights [1.0, 1.0, 1.5]
+- **Inspired by:** LoST (CVPR 2026), Matryoshka Representation Learning (NeurIPS 2022)
+- **Bonus:** Enables hierarchical retrieval (coarse→fine)
+
+## Candidate D: SIGReg + Predictive Auxiliary
+
+**Risk:** Low | **Expected gain:** 3-6% R@1 | **New code:** ~90 lines
+
+SIGReg enforces isotropic Gaussian distribution via Epps-Pulley test.
+Cross-modal predictor predicts z_brep from z_text with stop-gradient on target.
+
+- **Key classes:** `SIGReg`, `CrossModalPredictor`
+- **Loss:** 3-way InfoNCE + λ_sig × SIGReg + λ_pred × ||pred(z_text) - sg(z_brep)||²
+- **Hyperparams:** λ_sig=0.1, λ_pred=0.01
+- **Theory:** Balestriero et al. (arXiv:2511.08544), CLIPred (NeurIPS 2025)
+
+## Candidate E: Full Stack (A+B+C+D)
+
+**Risk:** High | **Expected gain:** 10-20% R@1 | **New code:** ~450 lines
+
+All components combined with 3-stage curriculum training:
+- Stage 0 (epochs 1-8): BRep+PC only, flat InfoNCE
+- Stage 1 (epochs 9-20): Add text + VIB(beta=1e-4) + SIGReg(λ=0.1)
+- Stage 2 (epochs 21-35): Enable hierarchy + increase beta + add predictor
+
+---
+
+## Notebooks
+
+| Notebook | Candidate | Cells | Key Component |
+|----------|-----------|-------|---------------|
+| `clip4cad_candidate_a_vib.ipynb` | A | 28 | VIB projection heads |
+| `clip4cad_candidate_b_sheaf.ipynb` | B | 27 | Sheaf B-Rep encoder |
+| `clip4cad_candidate_c_hierarchical.ipynb` | C | 28 | Nested contrastive |
+| `clip4cad_candidate_d_sigreg.ipynb` | D | 28 | SIGReg + predictor |
+| `clip4cad_candidate_e_fullstack.ipynb` | E | 30 | All combined |
+
+All notebooks are self-contained, Colab-ready, and generated by `generate_candidate_notebooks.py`.
+
+### Data Requirements (upload to Google Drive `/MMCAD/`)
+
+```
+brep_autobrep.h5              # B-Rep features (face:48d, edge:12d, 166K samples)
+train_text_embeddings.h5      # Phi-4-mini (133K, 256×3072, FP16)
+val_text_embeddings.h5        # Phi-4-mini (16.6K)
+test_text_embeddings.h5       # Phi-4-mini (16.6K)
+ply.tar.lz4                   # Point clouds (already uploaded)
+abc_dataset_clean.csv         # Dataset metadata (already uploaded)
+```
+
+### Training Configuration
+
+- **Data:** Train+Val combined for training (~150K), Test for evaluation (~16.6K)
+- **Optimizer:** AdamW, lr=1e-4, text_lr=3e-4, weight_decay=0.01
+- **Schedule:** Cosine with 2-epoch warmup
+- **Batch:** 128 (A100)
+- **Stages:** 2-stage (A-D) or 3-stage (E)
+- **Monitoring:** Margin (pos_sim - neg_sim), R@1 at each retrieval direction
+
+---
+
+## Testing Order (Recommended)
+
+1. **Days 1-2:** Infrastructure baseline (mHC-lite + GDN hybrid only)
+2. **Days 2-4:** A (VIB) and D (SIGReg) in parallel — lowest risk
+3. **Days 4-7:** B (Sheaf) — riskiest single component
+4. **Days 7-10:** C (Hierarchical) + best of {A, D}
+5. **Days 10-13:** E (Full Stack) if components individually work
+6. **Days 13-15:** Paper writing buffer
