@@ -74,22 +74,6 @@ HuggingFace model hub release coming soon.
 
 ---
 
-## Citation
-
-```bibtex
-@article{bharathi2026mmcad,
-  title     = {MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning},
-  author    = {Bharathi, Anush and Ananthakrishnan, A and Muthuganapathy, Ramanathan},
-  journal   = {Computer Graphics Forum},
-  volume    = {},
-  year      = {2026},
-  publisher = {Wiley},
-  note      = {Proc. SGP 2026}
-}
-```
-
----
-
 ## License
 
 MM-CAD dataset is released under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/). Code in this repository is MIT licensed. Models derived from the ABC dataset are subject to the [ABC dataset terms](https://deep-geometry.github.io/abc-dataset/).
