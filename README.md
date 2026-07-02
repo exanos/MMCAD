@@ -58,7 +58,7 @@ Training, synthesis, and inference notebooks (tri-modal and 5-modal retrieval, B
 
 ## Pretrained Models
 
-Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) are available in the [Drive weights folder](https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7). Hugging Face model hub release coming soon.
+Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) are available in the [Drive weights folder](https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7). Hugging Face model hub release coming soon!
 
 ---
 
