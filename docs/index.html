@@ -1,323 +1,165 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MM-CAD: A Multi-Modal CAD Dataset</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      background: #fafafa;
-      color: #1a1a1a;
-      line-height: 1.65;
-    }
-
-    /* Header */
-    header {
-      background: #fff;
-      border-bottom: 1px solid #e8e8e8;
-      padding: 56px 24px 40px;
-      text-align: center;
-    }
-
-    .venue {
-      display: inline-block;
-      background: #1a1a2e;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      padding: 4px 12px;
-      border-radius: 4px;
-      margin-bottom: 20px;
-    }
-
-    h1 {
-      font-size: clamp(22px, 3vw, 34px);
-      font-weight: 700;
-      line-height: 1.25;
-      max-width: 820px;
-      margin: 0 auto 24px;
-      color: #111;
-    }
-
-    .authors {
-      font-size: 17px;
-      margin-bottom: 6px;
-    }
-
-    .authors a {
-      color: #1a56db;
-      text-decoration: none;
-    }
-    .authors a:hover { text-decoration: underline; }
-
-    .affiliation {
-      font-size: 15px;
-      color: #555;
-      margin-bottom: 28px;
-    }
-
-    /* Link buttons */
-    .links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      justify-content: center;
-      margin-top: 4px;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      padding: 9px 20px;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 600;
-      text-decoration: none;
-      transition: opacity .15s;
-      border: 1.5px solid transparent;
-    }
-    .btn:hover { opacity: .8; }
-
-    .btn-primary   { background: #1a1a2e; color: #fff; }
-    .btn-secondary { background: #fff; color: #1a1a2e; border-color: #1a1a2e; }
-    .btn-hf        { background: #ff9d00; color: #fff; }
-
-    /* Sections */
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 0 24px;
-    }
-
-    section {
-      padding: 52px 0;
-      border-bottom: 1px solid #ebebeb;
-    }
-    section:last-child { border-bottom: none; }
-
-    h2 {
-      font-size: 22px;
-      font-weight: 700;
-      margin-bottom: 18px;
-      color: #111;
-    }
-
-    p { margin-bottom: 14px; }
-    p:last-child { margin-bottom: 0; }
-
-    /* Stats grid */
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 16px;
-      margin: 28px 0;
-    }
-
-    .stat-card {
-      background: #fff;
-      border: 1px solid #e4e4e4;
-      border-radius: 10px;
-      padding: 20px 16px;
-      text-align: center;
-    }
-
-    .stat-card .number {
-      font-size: 28px;
-      font-weight: 700;
-      color: #1a1a2e;
-      line-height: 1.1;
-    }
-
-    .stat-card .label {
-      font-size: 13px;
-      color: #666;
-      margin-top: 4px;
-    }
-
-    /* Modality table */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 15px;
-      margin-top: 20px;
-    }
-
-    th {
-      background: #1a1a2e;
-      color: #fff;
-      padding: 10px 14px;
-      text-align: left;
-      font-weight: 600;
-    }
-
-    td { padding: 10px 14px; border-bottom: 1px solid #ebebeb; }
-    tr:last-child td { border-bottom: none; }
-    tr:nth-child(even) td { background: #f7f7f7; }
-
-    /* Citation */
-    .citation-box {
-      background: #f4f4f4;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      padding: 20px 22px;
-      font-family: 'Courier New', monospace;
-      font-size: 13.5px;
-      line-height: 1.7;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin-top: 16px;
-    }
-
-    /* Footer */
-    footer {
-      text-align: center;
-      padding: 32px 24px;
-      font-size: 13px;
-      color: #888;
-      background: #fff;
-      border-top: 1px solid #e8e8e8;
-    }
-
-    @media (max-width: 600px) {
-      .stats { grid-template-columns: repeat(2, 1fr); }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning</title>
+<meta name="description" content="MM-CAD: 226K CAD models with renders, point clouds, sketches, construction-grounded captions, photorealistic images, and a joint cross-modal retrieval benchmark. SGP 2026 / Computer Graphics Forum.">
+<style>
+  :root{
+    --ink:#1a1a1a; --muted:#555; --accent:#0b5fa5; --accent2:#7a3fa0;
+    --bg:#ffffff; --card:#f6f8fa; --border:#e1e4e8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.55}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
+  header{padding:56px 0 28px;text-align:center}
+  h1{font-size:1.9rem;margin:0 0 14px;line-height:1.3}
+  .authors{font-size:1.05rem;margin:6px 0}
+  .authors a{color:var(--accent);text-decoration:none}
+  .affil{color:var(--muted);margin:4px 0}
+  .venue{margin:10px 0 18px;font-weight:600;color:var(--accent2)}
+  .btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin:18px 0 6px}
+  .btn{display:inline-block;padding:8px 18px;border-radius:22px;background:#222;color:#fff;text-decoration:none;font-size:.95rem}
+  .btn:hover{background:var(--accent)}
+  .btn.soon{background:#999;cursor:default}
+  h2{font-size:1.45rem;border-bottom:2px solid var(--border);padding-bottom:6px;margin-top:44px}
+  figure{margin:22px 0;text-align:center}
+  figure img{max-width:100%;height:auto;border-radius:6px}
+  figcaption{font-size:.9rem;color:var(--muted);margin-top:8px}
+  .strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:18px 0}
+  .strip div{text-align:center}
+  .strip img{width:100%;height:auto;border:1px solid var(--border);border-radius:6px;background:#fff}
+  .strip span{font-size:.8rem;color:var(--muted)}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:20px 0}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+  .card h3{margin-top:0}
+  .card ul{padding-left:18px;margin:10px 0}
+  .card li{margin:5px 0}
+  .tag{display:inline-block;font-size:.75rem;font-weight:700;padding:2px 10px;border-radius:12px;vertical-align:middle;margin-left:8px}
+  .tag.live{background:#d7f5dd;color:#1a7f37}
+  .tag.up{background:#fff3cd;color:#8a6d00}
+  table{border-collapse:collapse;width:100%;font-size:.92rem;margin:16px 0}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:center}
+  th{background:var(--card)}
+  td.best{font-weight:700;background:#eef7ff}
+  pre{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-x:auto;font-size:.85rem}
+  footer{margin-top:56px;padding:26px 0;border-top:1px solid var(--border);color:var(--muted);font-size:.9rem}
+  @media(max-width:760px){.cards{grid-template-columns:1fr}.strip{grid-template-columns:repeat(3,1fr)}h1{font-size:1.5rem}}
+</style>
 </head>
 <body>
-
-<header>
-  <div class="venue">SGP 2026 &nbsp;·&nbsp; Computer Graphics Forum</div>
+<header class="wrap">
   <h1>MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning</h1>
-
   <p class="authors">
-    <a href="https://orcid.org/0009-0002-3838-0945">Anush Bharathi</a>,
-    <a href="https://orcid.org/0009-0007-7825-6830">Ananthakrishnan A</a>,
+    <a href="https://orcid.org/0009-0002-3838-0945">Anush Bharathi</a> &nbsp;·&nbsp;
+    <a href="https://orcid.org/0009-0007-7825-6830">Ananthakrishnan A</a> &nbsp;·&nbsp;
     <a href="https://orcid.org/0000-0003-0182-977X">Ramanathan Muthuganapathy</a>
   </p>
-  <p class="affiliation">Indian Institute of Technology Madras</p>
-
-  <div class="links">
-    <a class="btn btn-primary" href="https://github.com/exanos/MMCAD">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.54-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
-      Code
-    </a>
-    <a class="btn btn-hf" href="https://huggingface.co/datasets/exanos/MMCAD">
-      🤗 Dataset
-    </a>
-    <a class="btn btn-secondary" href="https://github.com/exanos/MMCAD">
-      📄 Paper (coming soon)
-    </a>
+  <p class="affil">Indian Institute of Technology Madras, India</p>
+  <p class="venue">Symposium on Geometry Processing (SGP) 2026 · Computer Graphics Forum</p>
+  <div class="btns">
+    <a class="btn soon" title="DOI will be added upon online publication">📄 Paper (DOI soon)</a>
+    <a class="btn" href="https://huggingface.co/datasets/exanos/MMCAD">🤗 Dataset</a>
+    <a class="btn" href="https://github.com/exanos/MMCAD">💻 Code</a>
+    <a class="btn" href="https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7">📦 Weights &amp; Archives</a>
   </div>
 </header>
 
-<main class="container">
+<main class="wrap">
+  <figure>
+    <img src="static/teaser.png" alt="MM-CAD overview: MM-CAD:A (33,816 models, human annotation) bootstraps MM-CAD:B (192,626 models curated from ABC with MAAS, Gemini captions, photorealistic renders, sketches, and an application ontology)">
+    <figcaption>MM-CAD:A (left) provides human-annotated text and hand-drawn sketches over 33,816 models unified from eleven benchmarks; it bootstraps the curation and annotation of MM-CAD:B (right), 192,626 models distilled from the 1M-model ABC corpus.</figcaption>
+  </figure>
 
-  <!-- Abstract -->
-  <section>
-    <h2>Abstract</h2>
-    <p>
-      We introduce <strong>MM-CAD</strong>, a large-scale multi-modal CAD dataset designed to level up retrieval and retrieval-augmented generation models for engineering geometry. MM-CAD comprises two complementary parts. <strong>MM-CAD:A</strong> brings 33,816 unique CAD models from eleven widely used benchmark datasets under a common identifier scheme, with isometric renderings, point clouds, human-curated multi-level text captions, and 3,276 real hand-drawn user sketches. <strong>MM-CAD:B</strong> curates 192,626 models from the 1M-model ABC corpus through a seven-stage pipeline centered on Manifold-Aware Adaptive Sampling (MAAS), which organizes models into semantically coherent neighborhoods rather than merely removing duplicates. Every retained model is annotated through a metadata-grounded pipeline that conditions caption generation on parsed construction sequences, producing photorealistic in-context images, contour sketches, and a hierarchical application taxonomy. We further introduce a joint retrieval architecture aligning text, sketch, image, B-Rep, and point cloud encoders in a shared Matryoshka embedding space, establishing the first unified cross-modal retrieval benchmark for large-scale CAD.
-    </p>
-  </section>
+  <h2>Abstract</h2>
+  <p>Computer-Aided Design (CAD) boosts modern manufacturing, yet design reuse remains constrained by the absence of large, openly available CAD repositories with rich multi-modal annotations suitable for search/retrieval. Recent large-scale efforts to annotate public datasets rely on hash-based redundancy removal that leaves no semantic structure, and on captioning by Vision-Language Models (VLMs) using rendered images alone, which struggles to capture geometric and procedural information. We introduce MM-CAD, a multi-modal CAD dataset designed to level-up retrieval and retrieval-augmented generation models for engineering geometry, comprising two complementary parts. MM-CAD:A brings 33,816 unique CAD models from eleven widely used benchmark datasets under a common identifier scheme, with isometric renderings, point clouds, and humanly-curated multi-level text captions, and 4,376 real hand-drawn user sketches among others. MM-CAD:B curates 192,626 models from the 1M-model ABC corpus through a seven-stage pipeline centered on Manifold-Aware Adaptive Sampling (MAAS), which organizes models into semantically coherent neighborhoods rather than merely removing duplicates, directly supplying the hard negatives that contrastive retrieval training requires. Every retained model is annotated through a metadata-grounded pipeline that conditions caption generation on parsed construction sequences rather than rendered views alone, producing three-level text descriptions, multi-level contour sketches, a hierarchical application taxonomy, and photorealistic in-context images that largely preserve source CAD geometry, a modality not previously available at this scale on CAD data. We further introduce a joint retrieval architecture that aligns sketch, text, image, B-Rep, and point cloud encoders in a single latent space through Matryoshka-nested contrastive objectives, establishing the first unified cross-modal retrieval benchmark for large-scale CAD.</p>
 
-  <!-- Stats -->
-  <section>
-    <h2>Dataset at a Glance</h2>
+  <h2>Modalities</h2>
+  <p>Every model is paired with geometric and human-friendly query modalities under a single identifier space:</p>
+  <div class="strip">
+    <div><img src="static/render_source.png" alt="Isometric render"><span>Render</span></div>
+    <div><img src="static/render_pointcloud.png" alt="Point cloud with normals"><span>Point cloud</span></div>
+    <div><img src="static/render_brep_wire.png" alt="B-Rep wireframe"><span>B-Rep</span></div>
+    <div><img src="static/sketch_canny.png" alt="Light sketch (Canny)"><span>Sketch (light)</span></div>
+    <div><img src="static/sketch_contour.png" alt="Contour sketch"><span>Sketch (contour)</span></div>
+    <div><img src="static/render_photoreal.png" alt="Photorealistic in-context image"><span>Photoreal image</span></div>
+  </div>
 
-    <div class="stats">
-      <div class="stat-card">
-        <div class="number">226K+</div>
-        <div class="label">Total CAD models</div>
-      </div>
-      <div class="stat-card">
-        <div class="number">11</div>
-        <div class="label">Source benchmarks (MM-CAD:A)</div>
-      </div>
-      <div class="stat-card">
-        <div class="number">3,276</div>
-        <div class="label">Real hand-drawn sketches</div>
-      </div>
-      <div class="stat-card">
-        <div class="number">131K+</div>
-        <div class="label">Photorealistic images</div>
-      </div>
-      <div class="stat-card">
-        <div class="number">4,862</div>
-        <div class="label">Taxonomy nodes</div>
-      </div>
-      <div class="stat-card">
-        <div class="number">5</div>
-        <div class="label">Aligned modalities</div>
-      </div>
+  <h2>Dataset</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>MM-CAD:A <span class="tag live">LIVE ON 🤗</span></h3>
+      <p><strong>33,816 models</strong> unified from eleven benchmarks: MCB, CADNET, ESB, PSB, ShapeNet, ModelNet, DeepCAD, Fusion360 Gallery, CADParser, IFCNet, Thingi10K.</p>
+      <ul>
+        <li>Isometric renders (3 viewpoints) + meshes</li>
+        <li>10K-point clouds with oriented normals</li>
+        <li>Multi-level sketches incl. <strong>3,276 real hand-drawn</strong> + 1,100 traced sketches</li>
+        <li>Human-validated multi-level captions (Title / Description / Class)</li>
+        <li>80:10:10 split — 27,048 / 3,376 / 3,392</li>
+      </ul>
     </div>
+    <div class="card">
+      <h3>MM-CAD:B <span class="tag up">UPLOAD IN PROGRESS</span></h3>
+      <p><strong>192,626 models</strong> curated from the 1M-model ABC corpus via a seven-stage pipeline centered on Manifold-Aware Adaptive Sampling (MAAS).</p>
+      <ul>
+        <li>B-Rep (STEP) + point clouds + renders</li>
+        <li>Construction-sequence-grounded captions (parsed FeatureScript)</li>
+        <li>Multi-level contour sketches</li>
+        <li>Photorealistic in-context images for ~131K models</li>
+        <li>Hierarchical application taxonomy (4,862 nodes, recursive DPGMM)</li>
+        <li>FAISS neighborhood graph for hard-negative mining</li>
+      </ul>
+      <p style="font-size:.88rem;color:var(--muted)">Hugging Face upload is in progress; until it completes, MM-CAD:B modalities are available via the Google Drive archives below.</p>
+    </div>
+  </div>
+  <p><strong>Downloads:</strong>
+    <a href="https://huggingface.co/datasets/exanos/MMCAD">Hugging Face dataset</a> ·
+    <a href="https://drive.google.com/drive/folders/18-0zTkMVf5h7KF8RsZdBD1rCHZ6t-Qrw">Drive: photorealistic images</a> ·
+    <a href="https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7">Drive: point clouds, text, checkpoints</a>
+  </p>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Split</th>
-          <th>Models</th>
-          <th>Modalities</th>
-          <th>Annotation</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>MM-CAD:A</strong></td>
-          <td>33,816</td>
-          <td>Renders · Point clouds · Real sketches · Captions</td>
-          <td>Human-curated</td>
-        </tr>
-        <tr>
-          <td><strong>MM-CAD:B</strong></td>
-          <td>192,626</td>
-          <td>Renders · Point clouds · Contour sketches · Captions · Photorealistic images · Taxonomy</td>
-          <td>MAAS pipeline (Gemini 3 / FLUX.2-Klein)</td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
+  <h2>Application Taxonomy</h2>
+  <figure>
+    <img src="static/taxonomy.png" alt="Hierarchical application taxonomy over MM-CAD:B, built with recursive DPGMM clustering and LLM-named branches">
+    <figcaption>Recursive Dirichlet-Process mixture clustering with language-model-named branches turns MM-CAD:B into a navigable functional hierarchy of 4,862 nodes.</figcaption>
+  </figure>
 
-  <!-- Pipeline -->
-  <section>
-    <h2>MM-CAD:B Curation Pipeline</h2>
-    <p>
-      Starting from the full 1M-model ABC corpus, a 7-stage pipeline produces MM-CAD:B:
-    </p>
-    <ol style="padding-left:22px; margin-top:12px; line-height:2">
-      <li>ResNet18 feature extraction + TSP-inspired pre-sorting for visual coherence</li>
-      <li>Windowed 256-bit perceptual hash deduplication (O(<em>n</em>), removes 28.5%)</li>
-      <li>ReCon++ encoder fine-tuned on MM-CAD:A drives two-stage hierarchical clustering</li>
-      <li><strong>Manifold-Aware Adaptive Sampling (MAAS)</strong> — 8 adaptive modes based on local curvature and surface classification</li>
-      <li>Gemini 3 Pro/Flash caption generation from parsed FeatureScript construction sequences</li>
-      <li>FLUX.2-Klein photorealistic image synthesis conditioned on CAD renders (~131K models)</li>
-      <li>Recursive DPGMM taxonomy over BGE + co-occurrence keyword embeddings (4,862 nodes)</li>
-    </ol>
-  </section>
+  <h2>Joint Cross-Modal Retrieval Benchmark</h2>
+  <p>A joint architecture aligns five encoders — text (EmbeddingGemma-300M), sketch (ViT-Base), photoreal image (SigLIP-Base), B-Rep (BRepFormer), point cloud (DGCNN) — in a shared d=768 Matryoshka embedding space ({128, 256, 512, 768}). Trimodal queries dominate all configurations on the B-Rep gallery:</p>
+  <table>
+    <thead>
+      <tr><th>Text</th><th>Sketch</th><th>Image</th><th>R@1</th><th>R@5</th><th>R@10</th><th>R@25</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>✓</td><td>×</td><td>×</td><td>15.42</td><td>34.86</td><td>44.61</td><td>57.93</td></tr>
+      <tr><td>×</td><td>✓</td><td>×</td><td>32.69</td><td>57.86</td><td>67.31</td><td>78.59</td></tr>
+      <tr><td>×</td><td>×</td><td>✓</td><td>33.20</td><td>55.24</td><td>64.20</td><td>74.81</td></tr>
+      <tr><td>✓</td><td>✓</td><td>×</td><td>39.97</td><td>66.07</td><td>74.46</td><td>83.69</td></tr>
+      <tr><td>✓</td><td>×</td><td>✓</td><td>38.10</td><td>61.94</td><td>70.63</td><td>80.30</td></tr>
+      <tr><td>×</td><td>✓</td><td>✓</td><td>41.81</td><td>66.31</td><td>74.68</td><td>83.79</td></tr>
+      <tr><td>✓</td><td>✓</td><td>✓</td><td class="best">45.91</td><td class="best">70.29</td><td class="best">77.86</td><td class="best">85.91</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:.9rem;color:var(--muted)">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Matryoshka truncation to d=128 changes trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries with negligible loss. Released checkpoints expose all four nested dimensions.</p>
 
-  <!-- Benchmark -->
-  <section>
-    <h2>Benchmark</h2>
-    <p>
-      A joint multi-modal retrieval architecture aligns five modalities — text, hand-drawn sketch, isometric render, B-Rep solid, and point cloud — in a shared 768-dim Matryoshka embedding space. Pretrained checkpoints (tri-modal and 5-modal) are provided as reference baselines.
-    </p>
-    <p>
-      Key result: simple mean fusion of text + sketch + photorealistic image queries consistently outperforms every single- and pairwise-fusion baseline, establishing <strong>trimodal complementarity</strong> as an empirical fact for engineering CAD retrieval. Matryoshka truncation to <em>d</em>=128 retains 97.4% of <em>d</em>=768 R@1 performance.
-    </p>
-  </section>
-
-
+  <h2>Citation</h2>
+<pre>@article{bharathi2026mmcad,
+  title     = {MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning},
+  author    = {Bharathi, Anush and Ananthakrishnan, A and Muthuganapathy, Ramanathan},
+  journal   = {Computer Graphics Forum},
+  volume    = {},
+  year      = {2026},
+  publisher = {Wiley},
+  note      = {Proc. SGP 2026}
+}</pre>
 </main>
 
 <footer>
-  <p>Indian Institute of Technology Madras &nbsp;·&nbsp; SGP 2026 &nbsp;·&nbsp;
-  Released under <a href="https://creativecommons.org/licenses/by-nc/4.0/" style="color:#555">CC BY-NC 4.0</a></p>
+  <div class="wrap">
+    The MM-CAD dataset is released under <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; code is MIT licensed. Models derived from the ABC dataset are additionally subject to the <a href="https://deep-geometry.github.io/abc-dataset/">ABC dataset terms</a>; per-source attribution and redistribution notes are listed in the repository's LICENSES.md.<br>
+    © 2026 Anush Bharathi, Ananthakrishnan A, Ramanathan Muthuganapathy · Indian Institute of Technology Madras
+  </div>
 </footer>
-
 </body>
 </html>

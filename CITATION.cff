@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use MM-CAD, please cite the paper below."
+title: "MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning"
+authors:
+  - family-names: Bharathi
+    given-names: Anush
+    orcid: "https://orcid.org/0009-0002-3838-0945"
+  - family-names: A
+    given-names: Ananthakrishnan
+    orcid: "https://orcid.org/0009-0007-7825-6830"
+  - family-names: Muthuganapathy
+    given-names: Ramanathan
+    orcid: "https://orcid.org/0000-0003-0182-977X"
+preferred-citation:
+  type: article
+  title: "MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning"
+  authors:
+    - family-names: Bharathi
+      given-names: Anush
+    - family-names: A
+      given-names: Ananthakrishnan
+    - family-names: Muthuganapathy
+      given-names: Ramanathan
+  journal: "Computer Graphics Forum"
+  year: 2026
+  publisher:
+    name: Wiley
+  notes: "Proc. SGP 2026"
+url: "https://exanos.github.io/MMCAD"
+repository-code: "https://github.com/exanos/MMCAD"
+license: MIT
