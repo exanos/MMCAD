@@ -23,6 +23,9 @@ preferred-citation:
       given-names: Ramanathan
   journal: "Computer Graphics Forum"
   year: 2026
+  volume: 45
+  issue: 5
+  doi: "10.1111/cgf.70523"
   publisher:
     name: Wiley
   notes: "Proc. SGP 2026"

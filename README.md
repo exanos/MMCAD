@@ -4,6 +4,7 @@
 Indian Institute of Technology Madras
 *Symposium on Geometry Processing (SGP) 2026 — Computer Graphics Forum*
 
+[![Paper](https://img.shields.io/badge/Paper-10.1111%2Fcgf.70523-b31b1b)](https://doi.org/10.1111/cgf.70523)
 [![Project Page](https://img.shields.io/badge/Project%20Page-exanos.github.io%2FMMCAD-blue)](https://exanos.github.io/MMCAD)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/datasets/exanos/MMCAD)
 [![License: Data](https://img.shields.io/badge/Data-CC%20BY--NC%204.0-green)](https://creativecommons.org/licenses/by-nc/4.0/)
@@ -40,11 +41,7 @@ A joint retrieval architecture aligning text, sketch, image, B-Rep, and point cl
 | Part | Models | Status |
 |------|--------|--------|
 | MM-CAD:A | 33,816 | **Live** on [Hugging Face](https://huggingface.co/datasets/exanos/MMCAD) |
-| MM-CAD:B | 192,626 | Hugging Face upload **in progress** — interim access via Google Drive below |
-
-Google Drive (raw archives):
-- Photorealistic images: [Drive](https://drive.google.com/drive/folders/18-0zTkMVf5h7KF8RsZdBD1rCHZ6t-Qrw)
-- Point clouds, text, checkpoints, compressed modalities: [Drive](https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7)
+| MM-CAD:B | 192,626 | Hugging Face upload **in progress** — will appear in the same dataset repository |
 
 Everything is keyed by a global `uid`; `metadata.csv` / `metadata.parquet` join all modalities, source benchmark, category, split, and captions.
 
@@ -52,13 +49,23 @@ Everything is keyed by a global `uid`; `metadata.csv` / `metadata.parquet` join 
 
 ## Code
 
-Training, synthesis, and inference notebooks (tri-modal and 5-modal retrieval, BRep/sketch encoders, FLUX.2 photorealistic synthesis, DPGMM taxonomy, geometric motif tokenizer) are being cleaned for release and will be uploaded here shortly.
+Colab-ready notebooks (outputs stripped) in [`notebooks/`](notebooks/):
+
+| Notebook | Purpose |
+|----------|---------|
+| `mmcad_training_colab.ipynb` | Baseline multi-modal retrieval training on MM-CAD:A (sketch/text → point cloud) |
+| `mmcad_v_trimodal_c.ipynb` | Joint tri-modal training (EmbeddingGemma + BRepFormer + DGCNN, Matryoshka InfoNCE) |
+| `mmcad_sketch_encoder.ipynb` | ViT-Base sketch encoder, BRep-anchored alignment |
+| `mmcad_render_encoder.ipynb` | SigLIP-Base photorealistic-image encoder, BRep-anchored alignment |
+| `mmcad_inference.ipynb` | Retrieval inference + full Matryoshka evaluation matrix |
+
+Notebooks expect the dataset archives mounted from your own storage (paths are set in the first cells). Additional pipeline code (FLUX.2 synthesis, DPGMM taxonomy, motif tokenizer) will follow.
 
 ---
 
 ## Pretrained Models
 
-Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) are available in the [Drive weights folder](https://drive.google.com/drive/folders/1AajlWNhzbKkjdCK1cx9zw6G33UXw_Fz7). Hugging Face model hub release coming soon!
+Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) — sanitized download link coming soon.
 
 ---
 
@@ -69,9 +76,11 @@ Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) are available
   title     = {MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning},
   author    = {Bharathi, Anush and Ananthakrishnan, A and Muthuganapathy, Ramanathan},
   journal   = {Computer Graphics Forum},
-  volume    = {},
   year      = {2026},
   publisher = {Wiley},
+  volume    = {45},
+  number    = {5},
+  doi       = {10.1111/cgf.70523},
   note      = {Proc. SGP 2026}
 }
 ```
