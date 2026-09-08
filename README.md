@@ -23,7 +23,7 @@ MM-CAD is a multi-modal CAD dataset for retrieval and retrieval-augmented genera
 
 **MM-CAD:B** holds 192,626 models pulled out of the 1M-model ABC corpus by a seven-stage pipeline built around **Manifold-Aware Adaptive Sampling (MAAS)**. Rather than just dropping duplicates, MAAS groups models into neighbourhoods of similar geometry, which is what supplies the hard negatives contrastive retrieval training needs. Every model that survives is annotated across five aligned modalities. Split 173,363 train / 19,263 validation.
 
-The choice that matters most is **construction-sequence grounding**. Captions are conditioned on each model's parsed FeatureScript history instead of on rendered views alone, so the annotation knows things a render cannot show: that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances. Blind human raters rated the grounded captions Very or Extremely Accurate 85.7% of the time.
+**Construction-sequence grounding**: Captions are conditioned on each model's parsed FeatureScript history instead of on rendered views alone, so the annotation knows things a render cannot show: that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances. Blind human raters rated the grounded captions Very or Extremely Accurate 85.7% of the time.
 
 A joint retrieval architecture aligning text, sketch, image, B-Rep, and point cloud encoders in a shared Matryoshka space (d ∈ {128, 256, 512, 768}) is trained on MM-CAD:B and released as a reference benchmark. Trimodal (text + sketch + image) → B-Rep reaches **45.91% R@1** on the validation gallery.
 
@@ -63,8 +63,6 @@ ShapeNetV2 *meshes* are excluded because the upstream license does not permit me
 The recursive DPGMM pipeline that finds the 4,862-node application hierarchy in ~76K keywords mined from the captions. The cluster count is inferred at every level rather than declared. Uses dual semantic and PPMI co-occurrence embeddings, UMAP, Dirichlet-Process mixtures with BIC-validated splits, and bottom-up LLM naming. See [`taxonomy/README.md`](taxonomy/README.md).
 
 ### `notebooks/`: training, synthesis, inference
-
-Colab-ready, outputs stripped.
 
 | Notebook | Purpose |
 |----------|---------|
