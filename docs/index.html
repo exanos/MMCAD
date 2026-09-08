@@ -114,6 +114,7 @@
     <a class="btn" href="https://huggingface.co/datasets/exanos/MMCAD">🤗 Dataset</a>
     <a class="btn" href="https://github.com/exanos/MMCAD">💻 Code</a>
     <a class="btn" href="https://www.youtube.com/watch?v=3-a2MjjOJT0">▶ Talk</a>
+    <a class="btn" href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/checkpoints">⚙ Checkpoints</a>
   </div>
 </header>
 
@@ -311,6 +312,11 @@ b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")</code></pre>
     </tbody>
   </table>
   <p class="note">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Every fusion beats its best constituent. The point-cloud gallery is never directly supervised — its transfer is an emergent property of the shared space. Matryoshka truncation to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost; released checkpoints expose all four nested dimensions.</p>
+
+  <h3>Pretrained checkpoints</h3>
+  <p>Three checkpoints are released under <a href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/checkpoints"><code>checkpoints/</code></a>: the Stage-1 joint model (text + B-Rep + point cloud), and the two Stage-2 encoders aligned to frozen B-Rep anchors (sketch, photorealistic image). All expose the four nested dimensions.</p>
+<pre><code>python inference.py --query "servo mount with four bolt holes" --dim 128
+python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg</code></pre>
 
   <h3>Where it still fails</h3>
   <p>Retrieval matches <b>silhouette, not feature</b>. A query for "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 because radial perforations rhyme with lightening holes — the correct gear sits at #77. "Symmetrical V-groove pulley" returns a toroidal wheel; the correct part is at #426. Feature terms do not yet ground to geometry, and that gap is released as a benchmark task rather than hidden.</p>

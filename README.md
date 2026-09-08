@@ -80,7 +80,24 @@ Notebooks expect the dataset archives mounted from your own storage; paths are s
 
 ## Pretrained Models
 
-Tri-modal and 5-modal checkpoints, exposing all four Matryoshka dimensions — sanitized download link coming soon.
+Three checkpoints, all sharing one d=768 Matryoshka space over {128, 256, 512, 768}, hosted with the dataset under [`checkpoints/`](https://huggingface.co/datasets/exanos/MMCAD/tree/main/checkpoints):
+
+| Checkpoint | Towers | Role |
+|---|---|---|
+| `baseline_trimodal_v4.pth` | text (EmbeddingGemma-300M) · B-Rep (BRepFormer) · point cloud (DGCNN) | Stage 1, trained jointly with symmetric InfoNCE at all four scales |
+| `sketch_encoder_v1.pth` | sketch (ViT-Base) | Stage 2, aligned to frozen B-Rep anchors |
+| `render_encoder_v1.pth` | photorealistic image (SigLIP-Base) | Stage 2, aligned to frozen B-Rep anchors |
+
+Run retrieval with [`inference.py`](inference.py):
+
+```bash
+python inference.py --query "servo mount with four bolt holes" --dim 128
+python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg --top-k 10
+```
+
+Query vectors are summed and renormalized — no learned fusion head. Truncating to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost.
+
+Helper scripts in [`scripts/`](scripts/): `audit_checkpoints.py` reports what any `.pth` contains (towers, epoch, stored metrics) by reading only its pickle header, so multi-GB files are inspected instantly; `upload_checkpoints_to_hf.ipynb` republishes checkpoints from Drive to Hugging Face.
 
 ---
 
