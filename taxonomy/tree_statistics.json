@@ -1,0 +1,32 @@
+{
+  "total_nodes": 4862,
+  "internal_nodes": 271,
+  "leaf_nodes": 4591,
+  "max_depth": 4,
+  "branching_factor": {
+    "mean": 17.937269372693727,
+    "median": 20.0,
+    "min": 2,
+    "max": 25,
+    "std": 7.057992140848534
+  },
+  "leaf_sizes": {
+    "mean": 16.68329340013069,
+    "median": 9.0,
+    "min": 3,
+    "max": 456
+  },
+  "depth_distribution": {
+    "0": 1,
+    "1": 20,
+    "2": 492,
+    "3": 4339,
+    "4": 10
+  },
+  "leaf_reasons": {
+    "bic_no_improvement": 1557,
+    "below_min_split_size": 3033,
+    "single_component": 1
+  },
+  "construction_time_seconds": 481.87903928756714
+}

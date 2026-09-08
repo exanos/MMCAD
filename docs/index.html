@@ -4,48 +4,99 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning</title>
-<meta name="description" content="MM-CAD: 226K CAD models with renders, point clouds, sketches, construction-grounded captions, photorealistic images, and a joint cross-modal retrieval benchmark. SGP 2026 / Computer Graphics Forum.">
+<meta name="description" content="MM-CAD: 226K CAD models with renders, point clouds, sketches, construction-grounded captions, photorealistic images, an application taxonomy, and a joint cross-modal retrieval benchmark. SGP 2026 / Computer Graphics Forum.">
+<meta property="og:title" content="MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning">
+<meta property="og:description" content="226,442 CAD models · five aligned modalities · construction-grounded captions · SGP 2026">
+<meta property="og:image" content="https://exanos.github.io/MMCAD/static/teaser.png">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   :root{
-    --ink:#1a1a1a; --muted:#555; --accent:#0b5fa5; --accent2:#7a3fa0;
-    --bg:#ffffff; --card:#f6f8fa; --border:#e1e4e8;
+    --ink:#16181d; --muted:#5b6472; --accent:#0b5fa5; --accent2:#7a3fa0;
+    --bg:#ffffff; --card:#f6f8fa; --border:#e1e4e8; --code:#eef1f5;
   }
   *{box-sizing:border-box}
-  body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.55}
-  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
-  header{padding:56px 0 28px;text-align:center}
+  body{margin:0;font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+  header{padding:52px 0 24px;text-align:center}
   h1{font-size:1.9rem;margin:0 0 14px;line-height:1.3}
   .authors{font-size:1.05rem;margin:6px 0}
   .authors a{color:var(--accent);text-decoration:none}
+  .authors a:hover{text-decoration:underline}
   .affil{color:var(--muted);margin:4px 0}
   .venue{margin:10px 0 18px;font-weight:600;color:var(--accent2)}
   .btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin:18px 0 6px}
-  .btn{display:inline-block;padding:8px 18px;border-radius:22px;background:#222;color:#fff;text-decoration:none;font-size:.95rem}
+  .btn{display:inline-block;padding:8px 18px;border-radius:22px;background:#222;color:#fff;text-decoration:none;font-size:.95rem;transition:background .15s}
   .btn:hover{background:var(--accent)}
-  .btn.soon{background:#999;cursor:default}
-  h2{font-size:1.45rem;border-bottom:2px solid var(--border);padding-bottom:6px;margin-top:44px}
+  h2{font-size:1.45rem;border-bottom:2px solid var(--border);padding-bottom:6px;margin-top:48px}
+  h3{font-size:1.08rem;margin:26px 0 8px}
   figure{margin:22px 0;text-align:center}
   figure img{max-width:100%;height:auto;border-radius:6px}
-  figcaption{font-size:.9rem;color:var(--muted);margin-top:8px}
+  figcaption{font-size:.9rem;color:var(--muted);margin-top:8px;text-align:left}
+  /* video */
+  .video-wrap{position:relative;margin:26px 0 8px;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,.14)}
+  .video-ratio{position:relative;width:100%;padding-top:56.25%}
+  .video-ratio iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  #unmute{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);z-index:5;
+    display:flex;align-items:center;gap:9px;padding:11px 22px;border:0;border-radius:30px;cursor:pointer;
+    background:rgba(17,17,17,.86);color:#fff;font:600 .95rem/1 "Segoe UI",Roboto,sans-serif;
+    backdrop-filter:blur(6px);box-shadow:0 3px 14px rgba(0,0,0,.4)}
+  #unmute:hover{background:var(--accent)}
+  #unmute.hidden{display:none}
+  /* strips & grids */
   .strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:18px 0}
   .strip div{text-align:center}
   .strip img{width:100%;height:auto;border:1px solid var(--border);border-radius:6px;background:#fff}
   .strip span{font-size:.8rem;color:var(--muted)}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}
+  .grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:18px 0}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:18px 0}
+  .tile{text-align:center}
+  .tile img{width:100%;height:auto;border:1px solid var(--border);border-radius:8px;background:#fff;display:block}
+  .tile .lbl{font-size:.82rem;color:var(--muted);margin-top:6px}
+  .tile .lbl b{color:var(--ink)}
+  /* photoreal pair */
+  .pair{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--card)}
+  .pair .imgs{display:grid;grid-template-columns:1fr 1fr}
+  .pair .imgs img{width:100%;height:auto;display:block;background:#fff}
+  .pair .imgs img+img{border-left:1px solid var(--border)}
+  .pair .cap{padding:9px 11px;font-size:.83rem;color:var(--muted);text-align:left}
+  .pair .cap b{color:var(--ink);font-weight:600}
+  /* cards */
   .cards{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:20px 0}
   .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
   .card h3{margin-top:0}
   .card ul{padding-left:18px;margin:10px 0}
   .card li{margin:5px 0}
-  .tag{display:inline-block;font-size:.75rem;font-weight:700;padding:2px 10px;border-radius:12px;vertical-align:middle;margin-left:8px}
+  .tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:12px;vertical-align:middle;margin-left:8px}
   .tag.live{background:#d7f5dd;color:#1a7f37}
-  .tag.up{background:#fff3cd;color:#8a6d00}
+  /* stats */
+  .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:22px 0}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 8px;text-align:center}
+  .stat .n{font-size:1.35rem;font-weight:700;color:var(--accent)}
+  .stat .l{font-size:.76rem;color:var(--muted);margin-top:3px;line-height:1.3}
   table{border-collapse:collapse;width:100%;font-size:.92rem;margin:16px 0}
   th,td{border:1px solid var(--border);padding:7px 10px;text-align:center}
   th{background:var(--card)}
+  td.l{text-align:left}
   td.best{font-weight:700;background:#eef7ff}
   pre{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-x:auto;font-size:.85rem}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:.9em}
+  pre code{background:none;padding:0}
+  .quote{border-left:3px solid var(--border);padding:2px 0 2px 14px;margin:10px 0;font-size:.94rem}
+  .ok{color:#1a7f37;font-weight:700}
+  .bad{color:#b3261e;font-weight:700}
+  .note{font-size:.88rem;color:var(--muted)}
+  .hl-a{background:#d9f2ec;border-bottom:2px solid #1a9c85;padding:0 2px}
+  .hl-b{background:#ffe0d6;border-bottom:2px solid #e8552e;padding:0 2px}
+  .hl-c{background:#dbe8ff;border-bottom:2px solid #2f6fd0;padding:0 2px}
   footer{margin-top:56px;padding:26px 0;border-top:1px solid var(--border);color:var(--muted);font-size:.9rem}
-  @media(max-width:760px){.cards{grid-template-columns:1fr}.strip{grid-template-columns:repeat(3,1fr)}h1{font-size:1.5rem}}
+  @media(max-width:820px){
+    .cards,.grid4,.grid3,.pair .imgs{grid-template-columns:1fr 1fr}
+    .grid5{grid-template-columns:repeat(3,1fr)}
+    .stats{grid-template-columns:repeat(3,1fr)}
+    .strip{grid-template-columns:repeat(3,1fr)}
+    h1{font-size:1.5rem}
+  }
 </style>
 </head>
 <body>
@@ -62,69 +113,189 @@
     <a class="btn" href="https://doi.org/10.1111/cgf.70523">📄 Paper</a>
     <a class="btn" href="https://huggingface.co/datasets/exanos/MMCAD">🤗 Dataset</a>
     <a class="btn" href="https://github.com/exanos/MMCAD">💻 Code</a>
+    <a class="btn" href="https://www.youtube.com/watch?v=3-a2MjjOJT0">▶ Talk</a>
   </div>
 </header>
 
 <main class="wrap">
+
+  <!-- ============ TALK ============ -->
+  <div class="video-wrap">
+    <div class="video-ratio">
+      <iframe id="talk"
+        src="https://www.youtube-nocookie.com/embed/3-a2MjjOJT0?autoplay=1&mute=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1"
+        title="MM-CAD — SGP 2026 talk"
+        allow="autoplay; encrypted-media; picture-in-picture"
+        allowfullscreen></iframe>
+    </div>
+    <button id="unmute" aria-label="Unmute the talk">🔊 Tap for sound</button>
+  </div>
+  <p class="note" style="text-align:center;margin-top:6px">SGP 2026 conference talk · Bern, Switzerland — the 20-minute walkthrough of the dataset, the grounding mechanism, and the open problem.</p>
+
+  <!-- ============ TEASER ============ -->
   <figure>
-    <img src="static/teaser.png" alt="MM-CAD overview: MM-CAD:A (33,816 models, human annotation) bootstraps MM-CAD:B (192,626 models curated from ABC with MAAS, Gemini captions, photorealistic renders, sketches, and an application ontology)">
-    <figcaption>MM-CAD:A (left) provides human-annotated text and hand-drawn sketches over 33,816 models unified from eleven benchmarks; it bootstraps the curation and annotation of MM-CAD:B (right), 192,626 models distilled from the 1M-model ABC corpus.</figcaption>
+    <img src="static/teaser.png" alt="MM-CAD overview: MM-CAD:A with human annotation bootstraps MM-CAD:B, curated from ABC with MAAS, grounded captions, photorealistic renders, sketches, and an application ontology">
+    <figcaption><b>Build A by hand. Let A build B.</b> MM-CAD:A (left) provides human-annotated captions and hand-drawn sketches over 33,816 models unified from eleven benchmarks. The encoder fine-tuned on A then curates and annotates MM-CAD:B (right): 192,626 models distilled from the 1M-model ABC corpus.</figcaption>
   </figure>
+
+  <div class="stats">
+    <div class="stat"><div class="n">226K</div><div class="l">CAD models</div></div>
+    <div class="stat"><div class="n">5</div><div class="l">aligned modalities</div></div>
+    <div class="stat"><div class="n">11</div><div class="l">source benchmarks</div></div>
+    <div class="stat"><div class="n">4,069</div><div class="l">human-drawn sketches</div></div>
+    <div class="stat"><div class="n">129K</div><div class="l">photoreal images</div></div>
+    <div class="stat"><div class="n">4,862</div><div class="l">taxonomy nodes</div></div>
+  </div>
 
   <h2>Abstract</h2>
   <p>Computer-Aided Design (CAD) boosts modern manufacturing, yet design reuse remains constrained by the absence of large, openly available CAD repositories with rich multi-modal annotations suitable for search/retrieval. Recent large-scale efforts to annotate public datasets rely on hash-based redundancy removal that leaves no semantic structure, and on captioning by Vision-Language Models (VLMs) using rendered images alone, which struggles to capture geometric and procedural information. We introduce MM-CAD, a multi-modal CAD dataset designed to level-up retrieval and retrieval-augmented generation models for engineering geometry, comprising two complementary parts. MM-CAD:A brings 33,816 unique CAD models from eleven widely used benchmark datasets under a common identifier scheme, with isometric renderings, point clouds, and humanly-curated multi-level text captions, and 4,376 real hand-drawn user sketches among others. MM-CAD:B curates 192,626 models from the 1M-model ABC corpus through a seven-stage pipeline centered on Manifold-Aware Adaptive Sampling (MAAS), which organizes models into semantically coherent neighborhoods rather than merely removing duplicates, directly supplying the hard negatives that contrastive retrieval training requires. Every retained model is annotated through a metadata-grounded pipeline that conditions caption generation on parsed construction sequences rather than rendered views alone, producing three-level text descriptions, multi-level contour sketches, a hierarchical application taxonomy, and photorealistic in-context images that largely preserve source CAD geometry, a modality not previously available at this scale on CAD data. We further introduce a joint retrieval architecture that aligns sketch, text, image, B-Rep, and point cloud encoders in a single latent space through Matryoshka-nested contrastive objectives, establishing the first unified cross-modal retrieval benchmark for large-scale CAD.</p>
 
-  <h2>Modalities</h2>
-  <p>Every model is paired with geometric and human-friendly query modalities under a single identifier space:</p>
+  <!-- ============ MODALITIES ============ -->
+  <h2>Five aligned modalities</h2>
+  <p>Every retained model carries the same identifier across geometry and every human-friendly query modality:</p>
   <div class="strip">
-    <div><img src="static/render_source.png" alt="Isometric render"><span>Render</span></div>
-    <div><img src="static/render_pointcloud.png" alt="Point cloud with normals"><span>Point cloud</span></div>
-    <div><img src="static/render_brep_wire.png" alt="B-Rep wireframe"><span>B-Rep</span></div>
-    <div><img src="static/sketch_canny.png" alt="Light sketch (Canny)"><span>Sketch (light)</span></div>
-    <div><img src="static/sketch_contour.png" alt="Contour sketch"><span>Sketch (contour)</span></div>
-    <div><img src="static/render_photoreal.png" alt="Photorealistic in-context image"><span>Photoreal image</span></div>
+    <div><img src="static/render_source.png" alt="Isometric render" loading="lazy"><span>Render</span></div>
+    <div><img src="static/render_pointcloud.png" alt="Point cloud with normals" loading="lazy"><span>Point cloud</span></div>
+    <div><img src="static/render_brep_wire.png" alt="B-Rep wireframe" loading="lazy"><span>B-Rep</span></div>
+    <div><img src="static/sketch_canny.png" alt="Light sketch" loading="lazy"><span>Sketch</span></div>
+    <div><img src="static/render_photoreal.png" alt="Photorealistic in-context image" loading="lazy"><span>Photoreal</span></div>
+    <div><img src="static/samples/ground_block.png" alt="Feature-annotated caption sample" loading="lazy"><span>Grounded text</span></div>
   </div>
 
-  <h2>Dataset</h2>
-  <div class="cards">
-    <div class="card">
-      <h3>MM-CAD:A <span class="tag live">LIVE ON 🤗</span></h3>
-      <p><strong>33,816 models</strong> unified from eleven benchmarks: MCB, CADNET, ESB, PSB, ShapeNet, ModelNet, DeepCAD, Fusion360 Gallery, CADParser, IFCNet, Thingi10K.</p>
-      <ul>
-        <li>Isometric renders (3 viewpoints) + meshes</li>
-        <li>10K-point clouds with oriented normals</li>
-        <li>Multi-level sketches incl. <strong>3,276 real hand-drawn</strong> + 1,100 traced sketches</li>
-        <li>Human-validated multi-level captions (Title / Description / Class)</li>
-        <li>80:10:10 split — 27,048 / 3,376 / 3,392</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>MM-CAD:B <span class="tag up">UPLOAD IN PROGRESS</span></h3>
-      <p><strong>192,626 models</strong> curated from the 1M-model ABC corpus via a seven-stage pipeline centered on Manifold-Aware Adaptive Sampling (MAAS).</p>
-      <ul>
-        <li>B-Rep (STEP) + point clouds + renders</li>
-        <li>Construction-sequence-grounded captions (parsed FeatureScript)</li>
-        <li>Multi-level contour sketches</li>
-        <li>Photorealistic in-context images for ~131K models</li>
-        <li>Hierarchical application taxonomy (4,862 nodes, recursive DPGMM)</li>
-        <li>FAISS neighborhood graph for hard-negative mining</li>
-      </ul>
-      <p style="font-size:.88rem;color:var(--muted)">Hugging Face upload of the full MM-CAD:B is in progress and will appear in the same dataset repository.</p>
-    </div>
-  </div>
-  <p><strong>Downloads:</strong>
-    <a href="https://huggingface.co/datasets/exanos/MMCAD">Hugging Face dataset</a> ·
-    pretrained checkpoints — link coming soon
-  </p>
+  <!-- ============ GROUNDING ============ -->
+  <h2>How grounded are the captions?</h2>
+  <p>The usual approach shows a VLM a render and asks it to describe the part. MM-CAD:B instead parses each ABC model's <b>FeatureScript construction sequence</b> and conditions the caption on it. The sequence knows what the render cannot show: that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances.</p>
 
-  <h2>Application Taxonomy</h2>
   <figure>
-    <img src="static/taxonomy.png" alt="Hierarchical application taxonomy over MM-CAD:B, built with recursive DPGMM clustering and LLM-named branches">
-    <figcaption>Recursive Dirichlet-Process mixture clustering with language-model-named branches turns MM-CAD:B into a navigable functional hierarchy of 4,862 nodes.</figcaption>
+    <img src="static/samples/ground_onshape.png" alt="An ABC model open in Onshape showing its feature tree of human-named operations" loading="lazy" style="max-width:760px">
+    <figcaption>What ABC actually contains: a live Onshape document whose feature tree carries <i>human-named</i> operations — "Fan Duct Shell", "Heat Set Bezels". This history is parsed into the caption model's context verbatim, so <code>"54-tooth"</code> comes from the geometry, not from counting pixels.</figcaption>
   </figure>
 
-  <h2>Joint Cross-Modal Retrieval Benchmark</h2>
-  <p>A joint architecture aligns five encoders — text (EmbeddingGemma-300M), sketch (ViT-Base), photoreal image (SigLIP-Base), B-Rep (BRepFormer), point cloud (DGCNN) — in a shared d=768 Matryoshka embedding space ({128, 256, 512, 768}). Trimodal queries dominate all configurations on the B-Rep gallery:</p>
+  <h3>Feature-level grounding, model by model</h3>
+  <p>Each caption phrase below resolves to a specific named feature in the construction sequence — not to a silhouette guess:</p>
+  <div class="grid3">
+    <div class="tile">
+      <img src="static/samples/ground_cylinder.png" alt="Cylindrical part annotated with radial hole, split slot, and bore plus keyway callouts" loading="lazy">
+      <div class="lbl"><b>radial hole ×2</b> · <b>split slot</b> · <b>bore + keyway</b></div>
+    </div>
+    <div class="tile">
+      <img src="static/samples/ground_bracket.png" alt="Bracket annotated with circular boss, three grooves, and central channel callouts" loading="lazy">
+      <div class="lbl"><b>circular boss</b> · <b>grooves 1–3</b> · <b>central channel</b></div>
+    </div>
+    <div class="tile">
+      <img src="static/samples/ground_block.png" alt="Block annotated with a blind hole and a through-hole callout" loading="lazy">
+      <div class="lbl"><b>blind hole</b> vs. <b>through-hole</b> — a distinction no render carries</div>
+    </div>
+  </div>
+
+  <h3>Head-to-head: same model, same VLM, one difference</h3>
+  <div class="cards">
+    <div class="card">
+      <h3 style="margin-bottom:4px">Grounded — full pipeline</h3>
+      <p class="note" style="margin-top:0">Gemini 3 Pro + parsed FeatureScript</p>
+      <p class="quote"><span class="hl-a">A square block serving as a base</span>, with a <span class="hl-c">central, short cylindrical boss</span> on its top surface. A larger, <span class="hl-b">tapered cylindrical post with a 5-degree draft angle</span> extends vertically from the boss, culminating in a flat, circular top face.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:4px">Ablation — construction context removed</h3>
+      <p class="note" style="margin-top:0">same VLM, renders only</p>
+      <p class="quote">A transition piece composed of a square prismatic base supporting a central <i>lofted section… from a circular profile at its bottom to an elliptical profile at its top</i>. A fillet joins the base of the lofted section to the top face of the square base.</p>
+      <p style="font-size:.88rem;margin:8px 0 0"><span class="bad">✗</span> invents a loft — the sequence is one tapered extrude with a declared 5° draft, and the top face is circular, not elliptical<br>
+      <span class="bad">✗</span> the boss vanishes, replaced by an invented fillet<br>
+      <span class="ok">✓</span> the base it can see, it gets right — the failure is blindness, not the VLM</p>
+    </div>
+  </div>
+  <p class="note">Three more ablation cases follow the same pattern: <code>uid 83059</code> — "both intersecting through-holes" when one is <b>blind</b>; <code>uid 213</code> — threads invented and hole orientation flipped; <code>uid 84167</code> — "2×2 grid of grooves" when the model has 1 central channel + 3 transverse grooves. In blind human evaluation the grounded captions were rated Very/Extremely Accurate <b>85.7%</b> of the time.</p>
+
+  <!-- ============ PHOTOREAL ============ -->
+  <h2>Photorealistic images, paired to source geometry</h2>
+  <p>FLUX.2-Klein conditioned on the source render, so the synthesized photograph keeps the part's geometry rather than inventing a plausible-looking object. <b>129,679</b> released images; blind human raters scored geometric fidelity <b>3.64/4</b> and material realism <b>3.74/4</b>. Source CAD render on the left, synthesized image on the right:</p>
+  <div class="grid4">
+    <div class="pair">
+      <div class="imgs"><img src="static/samples/pr1_cad.png" alt="Source CAD render of a flanged rectangular chamber" loading="lazy"><img src="static/samples/pr1_img.jpg" alt="Photorealistic synthesis of the flanged rectangular chamber" loading="lazy"></div>
+      <div class="cap"><b>Flanged rectangular chamber</b>, circular front port</div>
+    </div>
+    <div class="pair">
+      <div class="imgs"><img src="static/samples/pr2_cad.png" alt="Source CAD render of a pentagonal mounting plate" loading="lazy"><img src="static/samples/pr2_img.jpg" alt="Photorealistic synthesis of the pentagonal mounting plate" loading="lazy"></div>
+      <div class="cap"><b>Pentagonal mounting plate</b>, five-hole pattern</div>
+    </div>
+    <div class="pair">
+      <div class="imgs"><img src="static/samples/pr3_cad.png" alt="Source CAD render of a four-arm plate" loading="lazy"><img src="static/samples/pr3_img.jpg" alt="Photorealistic synthesis of the four-arm plate" loading="lazy"></div>
+      <div class="cap"><b>Four-arm plate</b>, central + peripheral through-holes</div>
+    </div>
+    <div class="pair">
+      <div class="imgs"><img src="static/samples/pr4_cad.png" alt="Source CAD render of a linkage arm" loading="lazy"><img src="static/samples/pr4_img.jpg" alt="Photorealistic synthesis of the linkage arm" loading="lazy"></div>
+      <div class="cap"><b>Linkage arm</b>, clevis end + pivot bore</div>
+    </div>
+  </div>
+
+  <!-- ============ SKETCHES ============ -->
+  <h2>Sketches, style-diverse by construction</h2>
+  <p>A retrieval system fielding sketch queries has to survive whatever a user actually draws. MM-CAD:A contributes <b>4,069 real human sketches</b> (2,996 look-and-drawn, 1,073 traced); MM-CAD:B carries four synthetic styles per model, so no encoder can overfit to a single line aesthetic. Same part, five renderings:</p>
+  <div class="grid5">
+    <div class="tile"><img src="static/samples/sk_source.png" alt="Source CAD render of a circular connector" loading="lazy"><div class="lbl"><b>Source render</b></div></div>
+    <div class="tile"><img src="static/samples/sk_contour.png" alt="Contour sketch, PhotoSketching CGAN" loading="lazy"><div class="lbl"><b>Contour</b> (ours, CGAN)</div></div>
+    <div class="tile"><img src="static/samples/sk_canny.png" alt="Canny edge sketch" loading="lazy"><div class="lbl"><b>Canny</b></div></div>
+    <div class="tile"><img src="static/samples/sk_gemini.png" alt="Gemini-generated sketch" loading="lazy"><div class="lbl"><b>Gemini</b></div></div>
+    <div class="tile"><img src="static/samples/sk_gpt5.png" alt="GPT-5 generated sketch" loading="lazy"><div class="lbl"><b>GPT-5</b></div></div>
+  </div>
+  <p class="note">Blind raters scored sketch completeness 3.73/4 and recognizability 3.67/4. The contour network trained on MM-CAD:A transfers to MM-CAD:B with no retraining.</p>
+
+  <!-- ============ LATENT SPACE ============ -->
+  <h2>The corpus, as the encoder sees it</h2>
+  <figure>
+    <img src="static/abc_latent.png" alt="Two-dimensional projection of the ABC corpus in the fine-tuned ReCon++ latent space, with nearest-neighbour edges drawn and callouts showing the models inside individual neighbourhoods" loading="lazy">
+    <figcaption>The ABC corpus projected into the ReCon++ latent space fine-tuned on MM-CAD:A, with the nearest-neighbour graph that MAAS samples over. Callouts open individual neighbourhoods: gears sit with gears, pipe fittings with pipe fittings, brackets with brackets — the structure is <i>geometric similarity</i>, discovered without labels. This is what hash-based deduplication throws away, and what makes the retained neighbourhoods usable as hard negatives for contrastive training. <span class="note">(Produced during development; not included in the published paper.)</span></figcaption>
+  </figure>
+
+  <!-- ============ TAXONOMY ============ -->
+  <h2>Application taxonomy</h2>
+  <figure>
+    <img src="static/taxonomy.png" alt="Hierarchical application taxonomy over MM-CAD:B with a zoom into the Robotics and Motion Systems branch" loading="lazy">
+    <figcaption>76,593 application keywords mined from the grounded captions → recursive DPGMM → <b>4,862 nodes, 4,591 leaves, depth ≤ 4</b>, named bottom-up. The cluster count is inferred at every level, never declared: nobody knows a priori how many kinds of "mount" exist. Zoom shows the Robotics &amp; Motion Systems branch resolved to the leaf.</figcaption>
+  </figure>
+  <p>The full pipeline — dual semantic + PPMI co-occurrence embeddings, UMAP, recursive Dirichlet-Process mixtures with BIC-validated splits, bottom-up naming — is released in <a href="https://github.com/exanos/MMCAD/tree/main/taxonomy"><code>taxonomy/</code></a>, and the built tree ships with the dataset under <a href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/mmcad_b/taxonomy"><code>mmcad_b/taxonomy/</code></a>.</p>
+
+  <!-- ============ DATASET ============ -->
+  <h2>Dataset <span class="tag live">FULLY RELEASED</span></h2>
+  <div class="cards">
+    <div class="card">
+      <h3>MM-CAD:A — 33,816 models</h3>
+      <p>Unified from eleven benchmarks: MCB, DeepCAD, Thingi10K, ShapeNetV2, Fusion360, PSB, IFCNet, CADParser, ModelNet40, CADNET, ESB.</p>
+      <table style="font-size:.86rem;margin:10px 0">
+        <tr><td class="l">Renders (per view)</td><td>33,816</td></tr>
+        <tr><td class="l">Point clouds</td><td>32,001</td></tr>
+        <tr><td class="l">Meshes</td><td>31,616</td></tr>
+        <tr><td class="l">Contour / Canny sketches</td><td>25,026 / 1,814</td></tr>
+        <tr><td class="l">Human sketches (drawn / traced)</td><td>2,996 / 1,073</td></tr>
+        <tr><td class="l">Human text annotations</td><td>22,684</td></tr>
+      </table>
+      <p class="note">Split 27,048 / 3,376 / 3,392. ShapeNetV2 <i>meshes</i> are excluded (upstream license); its derived modalities are included.</p>
+    </div>
+    <div class="card">
+      <h3>MM-CAD:B — 192,626 models</h3>
+      <p>Curated from the 1M-model ABC corpus through the seven-stage MAAS pipeline, entirely on a single RTX 4090.</p>
+      <table style="font-size:.86rem;margin:10px 0">
+        <tr><td class="l">STEP B-Rep</td><td>192,625</td></tr>
+        <tr><td class="l">Point clouds (10K + normals)</td><td>192,625</td></tr>
+        <tr><td class="l">Three-level text annotations</td><td>192,625</td></tr>
+        <tr><td class="l">Renders (ISO1 / ISO2 / top)</td><td>192,541 / 192,112 / 188,566</td></tr>
+        <tr><td class="l">Contour sketches (ISO1 / ISO2)</td><td>189,908 / 189,861</td></tr>
+        <tr><td class="l">Photorealistic images</td><td>129,679</td></tr>
+      </table>
+      <p class="note">Split 173,363 train / 19,263 validation. Large modalities ship as uncompressed tar shards with per-shard SHA-256 checksums.</p>
+    </div>
+  </div>
+
+  <p><strong>Everything is on Hugging Face:</strong> <a href="https://huggingface.co/datasets/exanos/MMCAD">huggingface.co/datasets/exanos/MMCAD</a></p>
+<pre><code>from datasets import load_dataset
+
+a = load_dataset("exanos/MMCAD", "mmcad_a", split="train")
+b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")</code></pre>
+  <p class="note">Both corpora are keyed by a global <code>uid</code>; every asset is located through its <code>*_archive</code> and <code>*_member</code> columns, and an empty path means that modality is unavailable for that record.</p>
+
+  <!-- ============ BENCHMARK ============ -->
+  <h2>Joint cross-modal retrieval benchmark</h2>
+  <p>Five encoders — text (EmbeddingGemma-300M), sketch (ViT-Base), photoreal image (SigLIP-Base), B-Rep (BRepFormer), point cloud (DGCNN) — aligned in one d=768 Matryoshka space over {128, 256, 512, 768}. Query vectors are summed and renormalized; no learned fusion head. Trimodal queries dominate every configuration:</p>
   <table>
     <thead>
       <tr><th>Text</th><th>Sketch</th><th>Image</th><th>R@1</th><th>R@5</th><th>R@10</th><th>R@25</th></tr>
@@ -139,10 +310,14 @@
       <tr><td>✓</td><td>✓</td><td>✓</td><td class="best">45.91</td><td class="best">70.29</td><td class="best">77.86</td><td class="best">85.91</td></tr>
     </tbody>
   </table>
-  <p style="font-size:.9rem;color:var(--muted)">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Matryoshka truncation to d=128 changes trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries with negligible loss. Released checkpoints expose all four nested dimensions.</p>
+  <p class="note">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Every fusion beats its best constituent. The point-cloud gallery is never directly supervised — its transfer is an emergent property of the shared space. Matryoshka truncation to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost; released checkpoints expose all four nested dimensions.</p>
 
+  <h3>Where it still fails</h3>
+  <p>Retrieval matches <b>silhouette, not feature</b>. A query for "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 because radial perforations rhyme with lightening holes — the correct gear sits at #77. "Symmetrical V-groove pulley" returns a toroidal wheel; the correct part is at #426. Feature terms do not yet ground to geometry, and that gap is released as a benchmark task rather than hidden.</p>
+
+  <!-- ============ CITATION ============ -->
   <h2>Citation</h2>
-<pre>@article{bharathi2026mmcad,
+<pre><code>@article{bharathi2026mmcad,
   title     = {MM-CAD: A Multi-Modal CAD Dataset and Benchmark for Cross-Modal Geometric Learning},
   author    = {Bharathi, Anush and Ananthakrishnan, A and Muthuganapathy, Ramanathan},
   journal   = {Computer Graphics Forum},
@@ -152,14 +327,29 @@
   number    = {5},
   doi       = {10.1111/cgf.70523},
   note      = {Proc. SGP 2026}
-}</pre>
+}</code></pre>
 </main>
 
 <footer>
   <div class="wrap">
-    The MM-CAD dataset is released under <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; code is MIT licensed. Models derived from the ABC dataset are additionally subject to the <a href="https://deep-geometry.github.io/abc-dataset/">ABC dataset terms</a>; per-source attribution and redistribution notes are listed in the repository's LICENSES.md.<br>
+    Project-created annotations and derived assets (captions, renders, sketches, point clouds, photorealistic images, taxonomy) are released under <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; code is MIT licensed. Underlying geometry remains subject to each source dataset's own terms, including ABC/Onshape terms for MM-CAD:B — see <a href="https://huggingface.co/datasets/exanos/MMCAD/blob/main/LICENSES.md">LICENSES.md</a> for per-benchmark attribution before redistributing.<br>
     © 2026 Anush Bharathi, Ananthakrishnan A, Ramanathan Muthuganapathy · Indian Institute of Technology Madras
   </div>
 </footer>
+
+<script>
+(function(){
+  var btn = document.getElementById('unmute');
+  var f = document.getElementById('talk');
+  if(!btn || !f) return;
+  function post(fn){
+    try { f.contentWindow.postMessage(JSON.stringify({event:'command', func:fn, args:[]}), '*'); } catch(e){}
+  }
+  btn.addEventListener('click', function(){
+    post('unMute'); post('playVideo');
+    btn.classList.add('hidden');
+  });
+})();
+</script>
 </body>
 </html>

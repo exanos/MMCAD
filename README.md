@@ -7,65 +7,89 @@ Indian Institute of Technology Madras
 [![Paper](https://img.shields.io/badge/Paper-10.1111%2Fcgf.70523-b31b1b)](https://doi.org/10.1111/cgf.70523)
 [![Project Page](https://img.shields.io/badge/Project%20Page-exanos.github.io%2FMMCAD-blue)](https://exanos.github.io/MMCAD)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/datasets/exanos/MMCAD)
+[![Talk](https://img.shields.io/badge/Talk-YouTube-red)](https://www.youtube.com/watch?v=3-a2MjjOJT0)
 [![License: Data](https://img.shields.io/badge/Data-CC%20BY--NC%204.0-green)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![License: Code](https://img.shields.io/badge/Code-MIT-lightgrey)](LICENSE)
 
-Project page: **https://exanos.github.io/MMCAD**
+**Project page:** https://exanos.github.io/MMCAD · **Talk:** https://www.youtube.com/watch?v=3-a2MjjOJT0
 
 ---
 
 ## Overview
 
-MM-CAD is a large-scale multi-modal CAD dataset designed for retrieval and retrieval-augmented generation over engineering geometry. It consists of two complementary parts:
+MM-CAD is a large-scale multi-modal CAD dataset built for retrieval and retrieval-augmented generation over engineering geometry — *retrieval and identification, not generation*. It consists of two complementary parts, and the design principle is that **A is built by hand so that A can build B**.
 
-**MM-CAD:A** — 33,816 unique CAD models consolidated from eleven widely used benchmarks (MCB, CADNET, ESB, PSB, ShapeNet, ModelNet, DeepCAD, Fusion360 Gallery, CADParser, IFCNet, Thingi10K), with:
-- Isometric renders (3 viewpoints) and meshes
-- 10K-point clouds with oriented normals
-- Multi-level sketches including 3,276 real hand-drawn user sketches and 1,100 traced training sketches
-- Human-validated multi-level text captions (Title, Description, Class)
-- 80:10:10 split — 27,048 / 3,376 / 3,392
+**MM-CAD:A** — 33,816 unique CAD models consolidated from eleven benchmarks (MCB, DeepCAD, Thingi10K, ShapeNetV2, Fusion360 Gallery, PSB, IFCNet, CADParser, ModelNet40, CADNET, ESB), with isometric renders, 10K-point clouds with oriented normals, 4,069 real human sketches, and human-validated multi-level captions. Split 27,048 / 3,376 / 3,392.
 
-**MM-CAD:B** — 192,626 semantically organized models from the 1M-model ABC corpus, curated through a 7-stage pipeline centered on **Manifold-Aware Adaptive Sampling (MAAS)**, with:
-- Construction-sequence-grounded text captions from parsed FeatureScript metadata
-- Photorealistic in-context images conditioned on source CAD geometry (~131K models)
-- Multi-level synthetic contour sketches
-- Hierarchical application taxonomy (4,862 nodes, recursive DPGMM)
-- FAISS nearest-neighbor graph for hard-negative contrastive training
+**MM-CAD:B** — 192,626 models curated from the 1M-model ABC corpus through a seven-stage pipeline centered on **Manifold-Aware Adaptive Sampling (MAAS)**, which organizes models into semantically coherent neighborhoods rather than merely removing duplicates — directly supplying the hard negatives contrastive retrieval training needs. Every survivor is annotated across five aligned modalities. Split 173,363 train / 19,263 validation.
 
-A joint retrieval architecture aligning text, sketch, image, B-Rep, and point cloud encoders in a shared Matryoshka embedding space (d ∈ {128, 256, 512, 768}) is trained on MM-CAD:B and released as a reference benchmark. Trimodal (text+sketch+image) → B-Rep retrieval reaches **45.9% R@1** on the validation gallery.
+The distinguishing choice is **construction-sequence grounding**: captions are conditioned on each model's parsed FeatureScript history rather than on rendered views alone, so the annotation knows what a render cannot show — that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances. Blind human raters scored the grounded captions Very/Extremely Accurate 85.7% of the time.
+
+A joint retrieval architecture aligning text, sketch, image, B-Rep, and point cloud encoders in a shared Matryoshka space (d ∈ {128, 256, 512, 768}) is trained on MM-CAD:B and released as a reference benchmark. Trimodal (text + sketch + image) → B-Rep reaches **45.91% R@1** on the validation gallery.
 
 ---
 
 ## Dataset Access
 
-| Part | Models | Status |
-|------|--------|--------|
-| MM-CAD:A | 33,816 | **Live** on [Hugging Face](https://huggingface.co/datasets/exanos/MMCAD) |
-| MM-CAD:B | 192,626 | Hugging Face upload **in progress** — will appear in the same dataset repository |
+Both corpora are fully released on Hugging Face: **[huggingface.co/datasets/exanos/MMCAD](https://huggingface.co/datasets/exanos/MMCAD)**
 
-Everything is keyed by a global `uid`; `metadata.csv` / `metadata.parquet` join all modalities, source benchmark, category, split, and captions.
+```python
+from datasets import load_dataset
+
+a = load_dataset("exanos/MMCAD", "mmcad_a", split="train")
+b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")
+```
+
+| MM-CAD:A | Records | | MM-CAD:B | Records |
+|---|---:|---|---|---:|
+| Renders (per view) | 33,816 | | STEP B-Rep | 192,625 |
+| Point clouds | 32,001 | | Point clouds (10K + normals) | 192,625 |
+| Meshes | 31,616 | | Text annotations (3-level) | 192,625 |
+| Contour sketches | 25,026 | | Renders (ISO1/ISO2/top) | 192,541 / 192,112 / 188,566 |
+| Canny sketches | 1,814 | | Contour sketches (ISO1/ISO2) | 189,908 / 189,861 |
+| Human sketches (drawn/traced) | 2,996 / 1,073 | | Photorealistic images | 129,679 |
+| Human text annotations | 22,684 | | Application taxonomy | 4,862 nodes |
+
+Everything is keyed by a global `uid`. Assets are located through the `*_archive` and `*_member` columns in `metadata.parquet`; an empty path means that modality is unavailable for that record. Large MM-CAD:B modalities ship as uncompressed tar shards with per-shard SHA-256 checksums and complete manifests.
+
+ShapeNetV2 *meshes* are excluded because the upstream license does not permit mesh redistribution; its derived modalities (point clouds, renders, sketches, captions) are included.
 
 ---
 
 ## Code
 
-Colab-ready notebooks (outputs stripped) in [`notebooks/`](notebooks/):
+### `taxonomy/` — application taxonomy pipeline
+
+The recursive DPGMM pipeline that discovers the 4,862-node application hierarchy from ~76K caption-mined keywords, with the cluster count inferred at every level rather than declared. Dual semantic + PPMI co-occurrence embeddings, UMAP, Dirichlet-Process mixtures with BIC-validated splits, bottom-up LLM naming. See [`taxonomy/README.md`](taxonomy/README.md).
+
+### `notebooks/` — training, synthesis, inference
+
+Colab-ready, outputs stripped.
 
 | Notebook | Purpose |
 |----------|---------|
 | `mmcad_training_colab.ipynb` | Baseline multi-modal retrieval training on MM-CAD:A (sketch/text → point cloud) |
 | `mmcad_v_trimodal_c.ipynb` | Joint tri-modal training (EmbeddingGemma + BRepFormer + DGCNN, Matryoshka InfoNCE) |
-| `mmcad_sketch_encoder.ipynb` | ViT-Base sketch encoder, BRep-anchored alignment |
-| `mmcad_render_encoder.ipynb` | SigLIP-Base photorealistic-image encoder, BRep-anchored alignment |
+| `mmcad_sketch_encoder.ipynb` | ViT-Base sketch encoder, B-Rep-anchored alignment |
+| `mmcad_render_encoder.ipynb` | SigLIP-Base photorealistic-image encoder, B-Rep-anchored alignment |
 | `mmcad_inference.ipynb` | Retrieval inference + full Matryoshka evaluation matrix |
 
-Notebooks expect the dataset archives mounted from your own storage (paths are set in the first cells). Additional pipeline code (FLUX.2 synthesis, DPGMM taxonomy, motif tokenizer) will follow.
+Notebooks expect the dataset archives mounted from your own storage; paths are set in the first cells. Additional pipeline code (FLUX.2 synthesis, motif tokenizer) will follow.
 
 ---
 
 ## Pretrained Models
 
-Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) — sanitized download link coming soon.
+Tri-modal and 5-modal checkpoints, exposing all four Matryoshka dimensions — sanitized download link coming soon.
+
+---
+
+## Open problems
+
+Two are released as benchmark tasks rather than hidden:
+
+1. **Feature terms do not ground to geometry.** Retrieval matches silhouette, not feature: "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 (correct gear at #77); "symmetrical V-groove pulley" returns a toroidal wheel (correct part at #426).
+2. **Geometric motif vocabulary.** Decomposing CAD models into maximal recurring units under chamfer-congruence — 120,794 motifs mined with 0.78 cross-model recurrence, but a median 0.23 residual and 44.7% of parts above 80% residual. The tail is the open problem.
 
 ---
 
@@ -89,6 +113,6 @@ Tri-modal and 5-modal checkpoints (all four Matryoshka dimensions) — sanitized
 
 ## License
 
-- **Dataset:** [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
+- **Project-created annotations and derived assets** (captions, renders, sketches, point clouds, photorealistic images, taxonomy): [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
 - **Code:** [MIT](LICENSE)
-- Models derived from the ABC dataset are additionally subject to the [ABC dataset terms](https://deep-geometry.github.io/abc-dataset/). Per-source-benchmark attribution and redistribution notes for MM-CAD:A will be provided in `LICENSES.md`.
+- **Underlying geometry** remains subject to each source dataset's own terms, including ABC/Onshape terms for MM-CAD:B. See [`LICENSES.md`](https://huggingface.co/datasets/exanos/MMCAD/blob/main/LICENSES.md) on the dataset repository for per-benchmark attribution and redistribution notes. Verify current terms at each source before redistributing.
