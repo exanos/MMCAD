@@ -125,13 +125,13 @@
     <div class="video-ratio">
       <iframe id="talk"
         src="https://www.youtube-nocookie.com/embed/3-a2MjjOJT0?autoplay=1&mute=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1"
-        title="MM-CAD — SGP 2026 talk"
+        title="MM-CAD, SGP 2026 talk"
         allow="autoplay; encrypted-media; picture-in-picture"
         allowfullscreen></iframe>
     </div>
     <button id="unmute" aria-label="Unmute the talk">🔊 Tap for sound</button>
   </div>
-  <p class="note" style="text-align:center;margin-top:6px">SGP 2026 conference talk · Bern, Switzerland — the 20-minute walkthrough of the dataset, the grounding mechanism, and the open problem.</p>
+  <p class="note" style="text-align:center;margin-top:6px">The conference talk, given at SGP 2026 in Bern. It covers how the two corpora were built, why the captions are grounded in construction history, and what still does not work.</p>
 
   <!-- ============ TEASER ============ -->
   <figure>
@@ -169,11 +169,11 @@
 
   <figure>
     <img src="static/samples/ground_onshape.png" alt="An ABC model open in Onshape showing its feature tree of human-named operations" loading="lazy" style="max-width:760px">
-    <figcaption>What ABC actually contains: a live Onshape document whose feature tree carries <i>human-named</i> operations — "Fan Duct Shell", "Heat Set Bezels". This history is parsed into the caption model's context verbatim, so <code>"54-tooth"</code> comes from the geometry, not from counting pixels.</figcaption>
+    <figcaption>What ABC actually contains: a live Onshape document whose feature tree carries operations named by the person who modelled it: "Fan Duct Shell", "Heat Set Bezels". That history goes into the caption model's context verbatim, so <code>"54-tooth"</code> comes from the geometry rather than from counting pixels in a render.</figcaption>
   </figure>
 
   <h3>Feature-level grounding, model by model</h3>
-  <p>Each caption phrase below resolves to a specific named feature in the construction sequence — not to a silhouette guess:</p>
+  <p>Each caption phrase below points at a named feature in the construction sequence, not at a guess from the outline:</p>
   <div class="grid3">
     <div class="tile">
       <img src="static/samples/ground_cylinder.png" alt="Cylindrical part annotated with radial hole, split slot, and bore plus keyway callouts" loading="lazy">
@@ -181,31 +181,31 @@
     </div>
     <div class="tile">
       <img src="static/samples/ground_bracket.png" alt="Bracket annotated with circular boss, three grooves, and central channel callouts" loading="lazy">
-      <div class="lbl"><b>circular boss</b> · <b>grooves 1–3</b> · <b>central channel</b></div>
+      <div class="lbl"><b>circular boss</b> · <b>grooves 1 to 3</b> · <b>central channel</b></div>
     </div>
     <div class="tile">
       <img src="static/samples/ground_block.png" alt="Block annotated with a blind hole and a through-hole callout" loading="lazy">
-      <div class="lbl"><b>blind hole</b> vs. <b>through-hole</b> — a distinction no render carries</div>
+      <div class="lbl"><b>blind hole</b> vs. <b>through-hole</b>, a distinction no render carries</div>
     </div>
   </div>
 
   <h3>Head-to-head: same model, same VLM, one difference</h3>
   <div class="cards">
     <div class="card">
-      <h3 style="margin-bottom:4px">Grounded — full pipeline</h3>
+      <h3 style="margin-bottom:4px">Grounded, full pipeline</h3>
       <p class="note" style="margin-top:0">Gemini 3 Pro + parsed FeatureScript</p>
       <p class="quote"><span class="hl-a">A square block serving as a base</span>, with a <span class="hl-c">central, short cylindrical boss</span> on its top surface. A larger, <span class="hl-b">tapered cylindrical post with a 5-degree draft angle</span> extends vertically from the boss, culminating in a flat, circular top face.</p>
     </div>
     <div class="card">
-      <h3 style="margin-bottom:4px">Ablation — construction context removed</h3>
+      <h3 style="margin-bottom:4px">Ablation, construction context removed</h3>
       <p class="note" style="margin-top:0">same VLM, renders only</p>
       <p class="quote">A transition piece composed of a square prismatic base supporting a central <i>lofted section… from a circular profile at its bottom to an elliptical profile at its top</i>. A fillet joins the base of the lofted section to the top face of the square base.</p>
-      <p style="font-size:.88rem;margin:8px 0 0"><span class="bad">✗</span> invents a loft — the sequence is one tapered extrude with a declared 5° draft, and the top face is circular, not elliptical<br>
+      <p style="font-size:.88rem;margin:8px 0 0"><span class="bad">✗</span> invents a loft. The sequence is one tapered extrude with a declared 5° draft, and the top face is circular, not elliptical<br>
       <span class="bad">✗</span> the boss vanishes, replaced by an invented fillet<br>
-      <span class="ok">✓</span> the base it can see, it gets right — the failure is blindness, not the VLM</p>
+      <span class="ok">✓</span> the base it can see, it gets right. The failure is blindness, not the VLM</p>
     </div>
   </div>
-  <p class="note">Three more ablation cases follow the same pattern: <code>uid 83059</code> — "both intersecting through-holes" when one is <b>blind</b>; <code>uid 213</code> — threads invented and hole orientation flipped; <code>uid 84167</code> — "2×2 grid of grooves" when the model has 1 central channel + 3 transverse grooves. In blind human evaluation the grounded captions were rated Very/Extremely Accurate <b>85.7%</b> of the time.</p>
+  <p class="note">Three more ablation cases follow the same pattern: <code>uid 83059</code> calls both holes intersecting through-holes when one is <b>blind</b>; <code>uid 213</code> invents threads and flips the hole orientation; <code>uid 84167</code> reports a "2×2 grid of grooves" where the model has one central channel and three transverse grooves. In blind human evaluation the grounded captions were rated Very/Extremely Accurate <b>85.7%</b> of the time.</p>
 
   <!-- ============ PHOTOREAL ============ -->
   <h2>Photorealistic images, paired to source geometry</h2>
@@ -245,7 +245,7 @@
   <h2>The corpus, as the encoder sees it</h2>
   <figure>
     <img src="static/abc_latent.png" alt="Two-dimensional projection of the ABC corpus in the fine-tuned ReCon++ latent space, with nearest-neighbour edges drawn and callouts showing the models inside individual neighbourhoods" loading="lazy">
-    <figcaption>The ABC corpus projected into the ReCon++ latent space fine-tuned on MM-CAD:A, with the nearest-neighbour graph that MAAS samples over. Callouts open individual neighbourhoods: gears sit with gears, pipe fittings with pipe fittings, brackets with brackets — the structure is <i>geometric similarity</i>, discovered without labels. This is what hash-based deduplication throws away, and what makes the retained neighbourhoods usable as hard negatives for contrastive training. <span class="note">(Produced during development; not included in the published paper.)</span></figcaption>
+    <figcaption>The ABC corpus projected into the ReCon++ latent space fine-tuned on MM-CAD:A, with the nearest-neighbour graph that MAAS samples over. Zoom into any neighbourhood and the parts inside it are the same kind of thing: gears next to gears, pipe fittings next to pipe fittings. Nothing supervised that grouping. Hash-based deduplication discards this structure, which is also what makes the retained neighbourhoods work as hard negatives during contrastive training. <span class="note">(Produced during development; not included in the published paper.)</span></figcaption>
   </figure>
 
   <!-- ============ TAXONOMY ============ -->
@@ -254,13 +254,13 @@
     <img src="static/taxonomy.png" alt="Hierarchical application taxonomy over MM-CAD:B with a zoom into the Robotics and Motion Systems branch" loading="lazy">
     <figcaption>76,593 application keywords mined from the grounded captions → recursive DPGMM → <b>4,862 nodes, 4,591 leaves, depth ≤ 4</b>, named bottom-up. The cluster count is inferred at every level, never declared: nobody knows a priori how many kinds of "mount" exist. Zoom shows the Robotics &amp; Motion Systems branch resolved to the leaf.</figcaption>
   </figure>
-  <p>The full pipeline — dual semantic + PPMI co-occurrence embeddings, UMAP, recursive Dirichlet-Process mixtures with BIC-validated splits, bottom-up naming — is released in <a href="https://github.com/exanos/MMCAD/tree/main/taxonomy"><code>taxonomy/</code></a>, and the built tree ships with the dataset under <a href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/mmcad_b/taxonomy"><code>mmcad_b/taxonomy/</code></a>.</p>
+  <p>The full pipeline (dual semantic and PPMI co-occurrence embeddings, UMAP, recursive Dirichlet-Process mixtures with BIC-validated splits, bottom-up naming) is released in <a href="https://github.com/exanos/MMCAD/tree/main/taxonomy"><code>taxonomy/</code></a>, and the built tree ships with the dataset under <a href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/mmcad_b/taxonomy"><code>mmcad_b/taxonomy/</code></a>.</p>
 
   <!-- ============ DATASET ============ -->
   <h2>Dataset <span class="tag live">FULLY RELEASED</span></h2>
   <div class="cards">
     <div class="card">
-      <h3>MM-CAD:A — 33,816 models</h3>
+      <h3>MM-CAD:A · 33,816 models</h3>
       <p>Unified from eleven benchmarks: MCB, DeepCAD, Thingi10K, ShapeNetV2, Fusion360, PSB, IFCNet, CADParser, ModelNet40, CADNET, ESB.</p>
       <table style="font-size:.86rem;margin:10px 0">
         <tr><td class="l">Renders (per view)</td><td>33,816</td></tr>
@@ -273,7 +273,7 @@
       <p class="note">Split 27,048 / 3,376 / 3,392. ShapeNetV2 <i>meshes</i> are excluded (upstream license); its derived modalities are included.</p>
     </div>
     <div class="card">
-      <h3>MM-CAD:B — 192,626 models</h3>
+      <h3>MM-CAD:B · 192,626 models</h3>
       <p>Curated from the 1M-model ABC corpus through the seven-stage MAAS pipeline, entirely on a single RTX 4090.</p>
       <table style="font-size:.86rem;margin:10px 0">
         <tr><td class="l">STEP B-Rep</td><td>192,625</td></tr>
@@ -296,7 +296,7 @@ b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")</code></pre>
 
   <!-- ============ BENCHMARK ============ -->
   <h2>Joint cross-modal retrieval benchmark</h2>
-  <p>Five encoders — text (EmbeddingGemma-300M), sketch (ViT-Base), photoreal image (SigLIP-Base), B-Rep (BRepFormer), point cloud (DGCNN) — aligned in one d=768 Matryoshka space over {128, 256, 512, 768}. Query vectors are summed and renormalized; no learned fusion head. Trimodal queries dominate every configuration:</p>
+  <p>Five encoders share one d=768 Matryoshka space over {128, 256, 512, 768}: text (EmbeddingGemma-300M), sketch (ViT-Base), photoreal image (SigLIP-Base), B-Rep (BRepFormer), and point cloud (DGCNN). Query vectors are summed and renormalized, with no learned fusion head. Trimodal queries win every configuration:</p>
   <table>
     <thead>
       <tr><th>Text</th><th>Sketch</th><th>Image</th><th>R@1</th><th>R@5</th><th>R@10</th><th>R@25</th></tr>
@@ -311,7 +311,7 @@ b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")</code></pre>
       <tr><td>✓</td><td>✓</td><td>✓</td><td class="best">45.91</td><td class="best">70.29</td><td class="best">77.86</td><td class="best">85.91</td></tr>
     </tbody>
   </table>
-  <p class="note">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Every fusion beats its best constituent. The point-cloud gallery is never directly supervised — its transfer is an emergent property of the shared space. Matryoshka truncation to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost; released checkpoints expose all four nested dimensions.</p>
+  <p class="note">Recall on the MM-CAD:B validation set (B-Rep gallery, N=19,263, d=768). Every fusion beats its best constituent. Nothing directly supervises the point-cloud gallery, so its transfer comes out of the shared space on its own. Matryoshka truncation to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost; released checkpoints expose all four nested dimensions.</p>
 
   <h3>Pretrained checkpoints</h3>
   <p>Three checkpoints are released under <a href="https://huggingface.co/datasets/exanos/MMCAD/tree/main/checkpoints"><code>checkpoints/</code></a>: the Stage-1 joint model (text + B-Rep + point cloud), and the two Stage-2 encoders aligned to frozen B-Rep anchors (sketch, photorealistic image). All expose the four nested dimensions.</p>
@@ -319,7 +319,7 @@ b = load_dataset("exanos/MMCAD", "mmcad_b", split="train")</code></pre>
 python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg</code></pre>
 
   <h3>Where it still fails</h3>
-  <p>Retrieval matches <b>silhouette, not feature</b>. A query for "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 because radial perforations rhyme with lightening holes — the correct gear sits at #77. "Symmetrical V-groove pulley" returns a toroidal wheel; the correct part is at #426. Feature terms do not yet ground to geometry, and that gap is released as a benchmark task rather than hidden.</p>
+  <p>Retrieval matches <b>silhouette, not feature</b>. A query for "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 because radial perforations look like lightening holes. The correct gear sits at #77. "Symmetrical V-groove pulley" returns a toroidal wheel; the correct part is at #426. Feature terms still do not ground to geometry. We release that gap as a benchmark task instead of hiding it.</p>
 
   <!-- ============ CITATION ============ -->
   <h2>Citation</h2>
@@ -338,7 +338,7 @@ python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg</
 
 <footer>
   <div class="wrap">
-    Project-created annotations and derived assets (captions, renders, sketches, point clouds, photorealistic images, taxonomy) are released under <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; code is MIT licensed. Underlying geometry remains subject to each source dataset's own terms, including ABC/Onshape terms for MM-CAD:B — see <a href="https://huggingface.co/datasets/exanos/MMCAD/blob/main/LICENSES.md">LICENSES.md</a> for per-benchmark attribution before redistributing.<br>
+    Project-created annotations and derived assets (captions, renders, sketches, point clouds, photorealistic images, taxonomy) are released under <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC BY-NC 4.0</a>; code is MIT licensed. Underlying geometry remains subject to each source dataset's own terms, including ABC/Onshape terms for MM-CAD:B. Check <a href="https://huggingface.co/datasets/exanos/MMCAD/blob/main/LICENSES.md">LICENSES.md</a> for per-benchmark attribution before redistributing.<br>
     © 2026 Anush Bharathi, Ananthakrishnan A, Ramanathan Muthuganapathy · Indian Institute of Technology Madras
   </div>
 </footer>

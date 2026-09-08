@@ -2,7 +2,7 @@
 
 **Anush Bharathi, Ananthakrishnan A, Ramanathan Muthuganapathy**
 Indian Institute of Technology Madras
-*Symposium on Geometry Processing (SGP) 2026 — Computer Graphics Forum*
+*Symposium on Geometry Processing (SGP) 2026 · Computer Graphics Forum*
 
 [![Paper](https://img.shields.io/badge/Paper-10.1111%2Fcgf.70523-b31b1b)](https://doi.org/10.1111/cgf.70523)
 [![Project Page](https://img.shields.io/badge/Project%20Page-exanos.github.io%2FMMCAD-blue)](https://exanos.github.io/MMCAD)
@@ -17,13 +17,13 @@ Indian Institute of Technology Madras
 
 ## Overview
 
-MM-CAD is a large-scale multi-modal CAD dataset built for retrieval and retrieval-augmented generation over engineering geometry — *retrieval and identification, not generation*. It consists of two complementary parts, and the design principle is that **A is built by hand so that A can build B**.
+MM-CAD is a multi-modal CAD dataset for retrieval and retrieval-augmented generation over engineering geometry. The emphasis is on retrieval and identification rather than generation: engineers mostly look for a part that already exists and then edit its parameters. It comes in two parts, built on the idea that **A is made by hand so that A can build B**.
 
-**MM-CAD:A** — 33,816 unique CAD models consolidated from eleven benchmarks (MCB, DeepCAD, Thingi10K, ShapeNetV2, Fusion360 Gallery, PSB, IFCNet, CADParser, ModelNet40, CADNET, ESB), with isometric renders, 10K-point clouds with oriented normals, 4,069 real human sketches, and human-validated multi-level captions. Split 27,048 / 3,376 / 3,392.
+**MM-CAD:A** holds 33,816 unique CAD models consolidated from eleven benchmarks (MCB, DeepCAD, Thingi10K, ShapeNetV2, Fusion360 Gallery, PSB, IFCNet, CADParser, ModelNet40, CADNET, ESB), with isometric renders, 10K-point clouds with oriented normals, 4,069 real human sketches, and human-validated multi-level captions. Split 27,048 / 3,376 / 3,392.
 
-**MM-CAD:B** — 192,626 models curated from the 1M-model ABC corpus through a seven-stage pipeline centered on **Manifold-Aware Adaptive Sampling (MAAS)**, which organizes models into semantically coherent neighborhoods rather than merely removing duplicates — directly supplying the hard negatives contrastive retrieval training needs. Every survivor is annotated across five aligned modalities. Split 173,363 train / 19,263 validation.
+**MM-CAD:B** holds 192,626 models pulled out of the 1M-model ABC corpus by a seven-stage pipeline built around **Manifold-Aware Adaptive Sampling (MAAS)**. Rather than just dropping duplicates, MAAS groups models into neighbourhoods of similar geometry, which is what supplies the hard negatives contrastive retrieval training needs. Every model that survives is annotated across five aligned modalities. Split 173,363 train / 19,263 validation.
 
-The distinguishing choice is **construction-sequence grounding**: captions are conditioned on each model's parsed FeatureScript history rather than on rendered views alone, so the annotation knows what a render cannot show — that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances. Blind human raters scored the grounded captions Very/Extremely Accurate 85.7% of the time.
+The choice that matters most is **construction-sequence grounding**. Captions are conditioned on each model's parsed FeatureScript history instead of on rendered views alone, so the annotation knows things a render cannot show: that a hole is blind rather than through, that a taper is a declared 5° draft rather than a loft, that a circular pattern has exactly 54 instances. Blind human raters rated the grounded captions Very or Extremely Accurate 85.7% of the time.
 
 A joint retrieval architecture aligning text, sketch, image, B-Rep, and point cloud encoders in a shared Matryoshka space (d ∈ {128, 256, 512, 768}) is trained on MM-CAD:B and released as a reference benchmark. Trimodal (text + sketch + image) → B-Rep reaches **45.91% R@1** on the validation gallery.
 
@@ -58,11 +58,11 @@ ShapeNetV2 *meshes* are excluded because the upstream license does not permit me
 
 ## Code
 
-### `taxonomy/` — application taxonomy pipeline
+### `taxonomy/`: application taxonomy pipeline
 
-The recursive DPGMM pipeline that discovers the 4,862-node application hierarchy from ~76K caption-mined keywords, with the cluster count inferred at every level rather than declared. Dual semantic + PPMI co-occurrence embeddings, UMAP, Dirichlet-Process mixtures with BIC-validated splits, bottom-up LLM naming. See [`taxonomy/README.md`](taxonomy/README.md).
+The recursive DPGMM pipeline that finds the 4,862-node application hierarchy in ~76K keywords mined from the captions. The cluster count is inferred at every level rather than declared. Uses dual semantic and PPMI co-occurrence embeddings, UMAP, Dirichlet-Process mixtures with BIC-validated splits, and bottom-up LLM naming. See [`taxonomy/README.md`](taxonomy/README.md).
 
-### `notebooks/` — training, synthesis, inference
+### `notebooks/`: training, synthesis, inference
 
 Colab-ready, outputs stripped.
 
@@ -95,7 +95,7 @@ python inference.py --query "servo mount with four bolt holes" --dim 128
 python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg --top-k 10
 ```
 
-Query vectors are summed and renormalized — no learned fusion head. Truncating to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost.
+Query vectors are summed and renormalized, with no learned fusion head. Truncating to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost.
 
 Helper scripts in [`scripts/`](scripts/): `audit_checkpoints.py` reports what any `.pth` contains (towers, epoch, stored metrics) by reading only its pickle header, so multi-GB files are inspected instantly; `upload_checkpoints_to_hf.ipynb` republishes checkpoints from Drive to Hugging Face.
 
@@ -106,7 +106,7 @@ Helper scripts in [`scripts/`](scripts/): `audit_checkpoints.py` reports what an
 Two are released as benchmark tasks rather than hidden:
 
 1. **Feature terms do not ground to geometry.** Retrieval matches silhouette, not feature: "herringbone gear · ten lightening holes" returns a water-bottle base at rank 1 (correct gear at #77); "symmetrical V-groove pulley" returns a toroidal wheel (correct part at #426).
-2. **Geometric motif vocabulary.** Decomposing CAD models into maximal recurring units under chamfer-congruence — 120,794 motifs mined with 0.78 cross-model recurrence, but a median 0.23 residual and 44.7% of parts above 80% residual. The tail is the open problem.
+2. **Geometric motif vocabulary.** Decomposing CAD models into maximal recurring units under chamfer-congruence. We mined 120,794 motifs with 0.78 cross-model recurrence, but the median residual is 0.23 and 44.7% of parts sit above 80% residual. The tail is the open problem.
 
 ---
 

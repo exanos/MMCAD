@@ -1,23 +1,23 @@
-# MM-CAD:B Application Taxonomy — Recursive DPGMM
+# MM-CAD:B application taxonomy: recursive DPGMM
 
 Code that builds the hierarchical application taxonomy over MM-CAD:B: **4,862 nodes, 4,591 leaves, max depth 4**, discovered from ~76K application keywords mined from the grounded captions.
 
-The point of the method is that **the number of clusters is never declared**. Nobody knows a priori how many kinds of "mount" or "bracket" exist in a million-model corpus, so a Dirichlet Process Gaussian Mixture is fit recursively at every node and the branching factor is inferred from the data, with BIC validating each split.
+The method exists because **the number of clusters is never declared**. Nobody knows in advance how many kinds of "mount" or "bracket" live in a million-model corpus, so a Dirichlet Process Gaussian Mixture is fit recursively at every node, the branching factor comes from the data, and BIC decides whether each split is worth keeping.
 
 ## Method
 
-1. **Keyword extraction** — application keywords per model from the construction-grounded captions (~76K unique).
-2. **Dual embedding** — BGE-large semantic embeddings *and* PPMI co-occurrence embeddings over the keyword graph. Semantic embeddings miss which keywords actually co-occur on real parts; co-occurrence embeddings conflate synonyms. Fusing both (0.7 / 0.3) fixes each other's failure mode.
+1. **Keyword extraction.** Application keywords per model from the construction-grounded captions, about 76K unique.
+2. **Dual embedding.** BGE-large semantic embeddings together with PPMI co-occurrence embeddings over the keyword graph. Semantic embeddings miss which keywords actually appear together on real parts; co-occurrence embeddings conflate synonyms. Fusing both at 0.7 / 0.3 covers each one's blind spot.
 3. **UMAP** to 50 dimensions (cosine).
-4. **Recursive DPGMM** — `BayesianGaussianMixture` per node with a depth-scheduled concentration prior; components below a weight threshold are dropped, and a split is accepted only if it improves BIC over a single Gaussian.
-5. **Bottom-up LLM naming** — each node is named from its children's labels plus its top keywords, so parents are named after their subtree rather than the reverse.
-6. **UID enrichment** — `build_uid_tree.py` attaches the member model UIDs to every leaf and aggregates counts up the tree.
+4. **Recursive DPGMM.** A `BayesianGaussianMixture` per node with a depth-scheduled concentration prior. Components below a weight threshold are dropped, and a split is kept only if it improves BIC over a single Gaussian.
+5. **Bottom-up LLM naming.** Each node is named from its children's labels plus its top keywords, so a parent is named after its subtree rather than the other way round.
+6. **UID enrichment.** `build_uid_tree.py` attaches member model UIDs to every leaf and aggregates counts up the tree.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `recursive_dpgmm_tree.py` | Stages 1–5. Colab/GPU; writes `application_tree_dpgmm.json` + `tree_statistics.json` |
+| `recursive_dpgmm_tree.py` | Stages 1 to 5. Colab/GPU; writes `application_tree_dpgmm.json` and `tree_statistics.json` |
 | `build_uid_tree.py` | Stage 6. Attaches model UIDs per leaf, aggregates counts |
 | `APPLICATION_TREE_PIPELINE.md` | Full pipeline documentation, inputs, outputs, config reference |
 | `tree_statistics.json` | Shape metrics of the released tree |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MM-CAD — cross-modal retrieval inference.
+MM-CAD cross-modal retrieval inference.
 
 Loads the released MM-CAD checkpoints and retrieves CAD models from a text,
 sketch, and/or photorealistic-image query against a B-Rep or point-cloud gallery.
@@ -520,7 +520,7 @@ def main():
     else:
         modalities = "+".join(m for m, on in
                               [("text", args.query), ("sketch", args.sketch), ("image", args.image)] if on)
-        print(f"\nquery [{modalities}] @ d={args.dim} — top {len(results)} of {len(uids)}")
+        print(f"\nquery [{modalities}] @ d={args.dim}, top {len(results)} of {len(uids)}")
         for rank, (uid, score) in enumerate(results, 1):
             print(f"  {rank:>3}. uid {uid:<12} {score:.4f}")
 
