@@ -95,6 +95,24 @@ python inference.py --query "bevel gear" --sketch sketch.png --image photo.jpg -
 
 Query vectors are summed and renormalized, with no learned fusion head. Truncating to d=128 moves trimodal R@1 only from 45.91 to 45.50, so a d=128 FAISS index serves interactive queries at negligible cost.
 
+### Encoding your own STEP files (B-Rep tower)
+
+```bash
+python scripts/step_to_brep.py part.step -o part_brep.npz   # needs pythonocc-core 7.7
+```
+
+```python
+import numpy as np, inference as I
+model = I.load_joint_model("checkpoints/baseline_trimodal_v4.pth")
+ff_mean, ff_std = I.load_brep_stats("checkpoints/brep_norm_stats_v4.npz")
+z = I.embed_brep(model, I.prepare_brep(dict(np.load("part_brep.npz")), ff_mean, ff_std))
+```
+
+- [`scripts/step_to_brep.py`](scripts/step_to_brep.py) is the exact extractor used to build the training caches. Its docstring specifies the 16 face-feature columns, centroids, normals and `edge_to_faces`.
+- Use the released `brep_norm_stats_v4.npz` (computed over all 182,131 training parts) and do not recompute it on your own data. `prepare_brep()` applies it together with the per-part centroid normalization used in training.
+- `checkpoints/brep_reference/` holds three parts with raw tensors (`raw_*`), model-ready inputs (`in_*`) and their 768-d embeddings, for checking your pipeline end to end. [`notebooks/mmcad_brep_reference.ipynb`](notebooks/mmcad_brep_reference.ipynb) regenerates them and reproduces the stored v4 B-Rep embeddings at cosine 1.0.
+- Face features are sampled over each face's untrimmed UV domain in raw STEP units, so re-splitting faces or rescaling a part changes the inputs.
+
 Helper scripts in [`scripts/`](scripts/): `audit_checkpoints.py` reports what any `.pth` contains (towers, epoch, stored metrics) by reading only its pickle header, so multi-GB files are inspected instantly; `upload_checkpoints_to_hf.ipynb` republishes checkpoints from Drive to Hugging Face.
 
 ---
