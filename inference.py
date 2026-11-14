@@ -263,6 +263,49 @@ class BRepFormerLayer(nn.Module):
         return x + self.ffn(self.norm2(x))
 
 
+def compute_topo_distances(edge_to_faces, face_centroids, face_mask, face_normals, max_faces):
+    """Pairwise (B, N, N, 3) attention-bias inputs, exactly as used in training.
+
+    ch0  BFS hop distance over the face-adjacency graph built from
+         edge_to_faces, divided by (max_finite + 1); unreachable pairs = 1.0
+    ch1  centroid Euclidean distance / bbox diagonal of the centroids
+    ch2  arccos(cos angle between face normals) / pi
+    Rows/cols beyond n_faces stay 0.
+    """
+    B, N = edge_to_faces.shape[0], max_faces
+    out = torch.zeros(B, N, N, 3, device=edge_to_faces.device)
+    for b in range(B):
+        n_f = max(int(face_mask[b].sum().item()), 1)
+        adj = [[] for _ in range(n_f)]
+        for f0, f1 in edge_to_faces[b].long().tolist():
+            if 0 <= f0 < n_f and 0 <= f1 < n_f and f0 != f1:
+                adj[f0].append(f1)
+                adj[f1].append(f0)
+        sp = torch.full((n_f, n_f), float("inf"))
+        for src in range(n_f):
+            sp[src, src] = 0
+            queue, head = [src], 0
+            while head < len(queue):
+                u = queue[head]; head += 1
+                for v in adj[u]:
+                    if sp[src, v] == float("inf"):
+                        sp[src, v] = sp[src, u] + 1
+                        queue.append(v)
+        finite = sp != float("inf")
+        mx = sp[finite].max()
+        sp[~finite] = mx + 1
+        out[b, :n_f, :n_f, 0] = (sp / (mx + 1)).to(out.device)
+
+        c = face_centroids[b, :n_f]
+        diag = (c.max(0).values - c.min(0).values).norm() + 1e-8
+        out[b, :n_f, :n_f, 1] = torch.cdist(c[None], c[None])[0] / diag
+
+        n = face_normals[b, :n_f]
+        n = n / n.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        out[b, :n_f, :n_f, 2] = torch.acos((n @ n.T).clamp(-1.0, 1.0)) / math.pi
+    return out
+
+
 class BRepFormerEncoder(nn.Module):
     def __init__(self, d_face_in=16, d_out=768, d_model=512, n_heads=8, n_layers=6, max_faces=192):
         super().__init__()
@@ -284,9 +327,11 @@ class BRepFormerEncoder(nn.Module):
         cls = self.cls_token.expand(B, -1, -1)
         h = torch.cat([cls, h], dim=1)
         mask = torch.cat([torch.ones(B, 1, device=face_mask.device), face_mask], dim=1)
-        bias = self.topo_bias_proj(face_centroids)
-        bias = F.pad(bias, (0, 0, 1, 0))
-        attn_bias = (bias.unsqueeze(2) + bias.unsqueeze(1)).permute(0, 3, 1, 2)
+        # Pairwise topology bias (B, N+1, N+1, heads); CLS row/col padded with 0.
+        topo = compute_topo_distances(edge_to_faces, face_centroids, face_mask,
+                                      face_normals, self.max_faces)
+        topo = F.pad(topo, (0, 0, 1, 0, 1, 0), value=0)
+        attn_bias = self.topo_bias_proj(topo).permute(0, 3, 1, 2)
         for layer in self.layers:
             h = layer(h, attn_bias=attn_bias, mask=mask)
         return self.output_proj(self.final_norm(h)[:, 0])
@@ -407,6 +452,58 @@ def embed_point_cloud(model, points: np.ndarray, dim: int = 768, device=DEVICE) 
     pts = pts / (np.linalg.norm(pts, axis=1).max() + 1e-9)
     x = torch.from_numpy(pts).T.unsqueeze(0).to(device)
     return truncate(model.pc_encoder(x), dim)
+
+
+def load_brep_stats(path: str | Path):
+    """Face-feature normalization stats used for baseline_trimodal_v4.
+
+    .npz with 'ff_mean' (16,) and 'ff_std' (16,), computed over every
+    non-all-zero face row of the full training brep_features.h5 (182,131
+    parts). Do NOT recompute these on your own data.
+    """
+    d = np.load(path)
+    return d["ff_mean"].astype(np.float32), d["ff_std"].astype(np.float32)
+
+
+def prepare_brep(raw: dict, ff_mean: np.ndarray, ff_std: np.ndarray) -> dict:
+    """Turn raw extractor output (scripts/step_to_brep.py) into model inputs.
+
+    Mirrors the training dataset exactly:
+      face_features  (x - ff_mean) / ff_std, padded rows reset to 0
+      face_centroids centered on the mean of valid centroids, divided by the
+                     max abs deviation (per-part, not per-axis)
+      face_normals   SLProps normal at the face's UV-grid center
+                     (falls back to face_features[:, 12:15] if absent)
+    """
+    n = int(raw["face_mask"].sum())
+    ff = (raw["face_features"] - ff_mean) / ff_std
+    ff[n:] = 0
+    fc = raw["face_centroids"].astype(np.float32).copy()
+    if n > 0:
+        center = fc[:n].mean(0)
+        scale = np.abs(fc[:n] - center).max() + 1e-8
+        fc = (fc - center) / scale
+        fc[n:] = 0
+    fn = raw.get("face_normals")
+    if fn is None:
+        fn = raw["face_features"][:, 12:15]
+    as_t = lambda a, dt=torch.float32: torch.as_tensor(np.asarray(a), dtype=dt).unsqueeze(0)
+    return {
+        "face_features": as_t(ff),
+        "face_centroids": as_t(fc),
+        "edge_to_faces": as_t(raw["edge_to_faces"], torch.long),
+        "face_mask": as_t(raw["face_mask"]),
+        "face_normals": as_t(fn),
+    }
+
+
+@torch.no_grad()
+def embed_brep(model, inputs: dict, dim: int = 768, device=DEVICE) -> torch.Tensor:
+    """inputs: output of prepare_brep(). Returns a unit (1, dim) embedding."""
+    x = {k: v.to(device) for k, v in inputs.items()}
+    z = model.brep_encoder(x["face_features"], x["face_centroids"],
+                           x["edge_to_faces"], x["face_mask"], x["face_normals"])
+    return truncate(z, dim)
 
 
 def fuse(*embeddings: torch.Tensor) -> torch.Tensor:
