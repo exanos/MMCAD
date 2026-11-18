@@ -428,14 +428,44 @@ def embed_text(model, query: str, dim: int = 768, device=DEVICE) -> torch.Tensor
 
 
 @torch.no_grad()
-def embed_image(encoder, image_path: str | Path, processor_name: str,
-                dim: int = 768, device=DEVICE) -> torch.Tensor:
-    from PIL import Image
-    from transformers import AutoImageProcessor
+def image_transform(processor_name: str):
+    """Exact validation transform used to train the released image encoders.
 
-    processor = AutoImageProcessor.from_pretrained(processor_name)
+    Resize(256) scales the SHORTER side to 256 (aspect kept), then
+    CenterCrop(224). Normalization: ImageNet stats for the ViT sketch encoder,
+    0.5/0.5 for the SigLIP render encoder. Non-square inputs lose their sides
+    in the crop; training images were square, so pad to square first
+    (see pad_to_square) if your geometry reaches the canvas edges.
+    """
+    from torchvision import transforms
+    if "siglip" in processor_name.lower():
+        mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+    else:
+        mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+    return transforms.Compose([
+        transforms.Resize(256), transforms.CenterCrop(224),
+        transforms.ToTensor(), transforms.Normalize(mean=mean, std=std),
+    ])
+
+
+def pad_to_square(img, fill=(255, 255, 255)):
+    """Pad a PIL image to a square canvas (white background), centered."""
+    from PIL import Image
+    w, h = img.size
+    s = max(w, h)
+    out = Image.new("RGB", (s, s), fill)
+    out.paste(img, ((s - w) // 2, (s - h) // 2))
+    return out
+
+
+@torch.no_grad()
+def embed_image(encoder, image_path: str | Path, processor_name: str,
+                dim: int = 768, device=DEVICE, square_pad: bool = True) -> torch.Tensor:
+    from PIL import Image
     img = Image.open(image_path).convert("RGB")
-    pixel_values = processor(images=img, return_tensors="pt")["pixel_values"].to(device)
+    if square_pad:
+        img = pad_to_square(img)
+    pixel_values = image_transform(processor_name)(img).unsqueeze(0).to(device)
     return truncate(encoder(pixel_values), dim)
 
 
