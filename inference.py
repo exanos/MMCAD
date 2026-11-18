@@ -369,15 +369,33 @@ def _state_dict(ckpt_path: str | Path):
     return ckpt, {}
 
 
+def _load_checked(model, sd, name):
+    """Load a checkpoint and fail loudly on any real mismatch.
+
+    The released checkpoints were saved with transformers 4.x. transformers 5
+    renamed the ViT/SigLIP parameters, and a non-strict load would then silently
+    leave the image backbone randomly initialized. Only HF pooler heads that
+    the encoders never use are allowed to be missing.
+    """
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    missing = [k for k in missing if ".pooler." not in k and ".head." not in k]
+    if missing or unexpected:
+        if name == "joint" and all(k.startswith("text_encoder.") for k in missing + unexpected):
+            print(f"[joint] warning: {len(missing)} missing / {len(unexpected)} unexpected "
+                  "text-encoder keys (sentence-transformers version); B-Rep and point-cloud "
+                  "towers loaded exactly.", file=sys.stderr)
+            return
+        raise RuntimeError(
+            f"[{name}] checkpoint does not match the model: {len(missing)} missing, "
+            f"{len(unexpected)} unexpected keys (e.g. {(missing or unexpected)[:2]}). "
+            "Install transformers<5:  pip install 'transformers>=4.44,<5'")
+
+
 def load_joint_model(ckpt_path: str | Path, device=DEVICE):
     """Load the Stage-1 tri-modal model (text + B-Rep + point cloud)."""
     model = Baseline(EmbeddingGemmaEncoder(), CONFIG)
     sd, meta = _state_dict(ckpt_path)
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if missing:
-        print(f"[joint] {len(missing)} missing keys (first: {missing[:2]})", file=sys.stderr)
-    if unexpected:
-        print(f"[joint] {len(unexpected)} unexpected keys (first: {unexpected[:2]})", file=sys.stderr)
+    _load_checked(model, sd, "joint")
     model.eval().to(device)
     if "epoch" in meta:
         print(f"[joint] loaded epoch {meta['epoch']}")
@@ -387,7 +405,7 @@ def load_joint_model(ckpt_path: str | Path, device=DEVICE):
 def load_sketch_encoder(ckpt_path: str | Path, device=DEVICE):
     model = ViTSketchEncoder()
     sd, meta = _state_dict(ckpt_path)
-    model.load_state_dict(sd, strict=False)
+    _load_checked(model, sd, "sketch")
     model.eval().to(device)
     if "epoch" in meta:
         print(f"[sketch] loaded epoch {meta['epoch']}")
@@ -397,7 +415,7 @@ def load_sketch_encoder(ckpt_path: str | Path, device=DEVICE):
 def load_render_encoder(ckpt_path: str | Path, device=DEVICE):
     model = SigLIPRenderEncoder()
     sd, meta = _state_dict(ckpt_path)
-    model.load_state_dict(sd, strict=False)
+    _load_checked(model, sd, "render")
     model.eval().to(device)
     if "epoch" in meta:
         print(f"[render] loaded epoch {meta['epoch']}")
