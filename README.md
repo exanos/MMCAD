@@ -113,6 +113,13 @@ z = I.embed_brep(model, I.prepare_brep(dict(np.load("part_brep.npz")), ff_mean, 
 - `checkpoints/brep_reference/` holds three parts with raw tensors (`raw_*`), model-ready inputs (`in_*`) and their 768-d embeddings, for checking your pipeline end to end. [`notebooks/mmcad_brep_reference.ipynb`](notebooks/mmcad_brep_reference.ipynb) regenerates them and reproduces the stored v4 B-Rep embeddings at cosine 1.0.
 - Face features are sampled over each face's untrimmed UV domain in raw STEP units, so re-splitting faces or rescaling a part changes the inputs.
 
+### Image encoders (sketch / photoreal)
+
+- **Use `transformers>=4.44,<5`.** The checkpoints were saved with transformers 4.x, and v5 renamed the ViT/SigLIP parameters. The loaders in `inference.py` now raise an error on a mismatch rather than silently running an untrained backbone.
+- Preprocessing is the training validation transform in `inference.image_transform()`: `Resize(256)` (shorter side), then `CenterCrop(224)`. The sketch encoder uses ImageNet mean/std; the render encoder uses 0.5/0.5.
+- Training sketches are 512×512 black-on-white line drawings with the part filling roughly 70–85% of the canvas. `embed_image()` pads non-square inputs to a white square first, so the center crop does not cut geometry.
+- `checkpoints/sketch_reference/` holds three training sketches with their model-ready `input` tensor and embeddings. Regenerate them with [`notebooks/mmcad_sketch_reference.ipynb`](notebooks/mmcad_sketch_reference.ipynb).
+
 Helper scripts in [`scripts/`](scripts/): `audit_checkpoints.py` reports what any `.pth` contains (towers, epoch, stored metrics) by reading only its pickle header, so multi-GB files are inspected instantly; `upload_checkpoints_to_hf.ipynb` republishes checkpoints from Drive to Hugging Face.
 
 ---
